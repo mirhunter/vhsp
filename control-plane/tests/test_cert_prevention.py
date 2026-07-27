@@ -167,3 +167,30 @@ def test_one_tenants_failure_does_not_stop_the_pass(recon):
     result = provisioner.reconcile_tenant_certificates()
     assert calls == ["second.example.com"]
     assert len(result) == 1
+
+
+# --- the shared webmail container -------------------------------------
+
+def test_webmail_routers_are_gated_per_tenant(monkeypatch):
+    """Found by running prevention end-to-end rather than by review: the
+    apex and admin hostnames went quiet but webmail.<domain> still burned
+    one validation per tenant created, because its router lives on the
+    shared Roundcube container and inherited the entrypoint's resolver.
+
+    Gated per router, not per container: one container carries every
+    tenant's webmail route, so a tenant whose DNS is ready must keep its
+    real certificate while a newly created one waits on the fallback.
+    """
+    import re
+    from pathlib import Path
+    src = Path(provisioner.__file__).read_text()
+    body = src[src.index("def _regenerate_roundcube_routes"):]
+    body = body[:body.index("\ndef ", 1)]
+
+    assert "_tls_labels(router_id, should_request_cert(t.domain))" in body, (
+        "webmail routers must opt out of the entrypoint's certresolver until "
+        "that tenant's DNS resolves here"
+    )
+    # The decision must be per-tenant, not hoisted out of the loop.
+    loop = body[body.index("for t in registry.list_tenants():"):]
+    assert "_tls_labels" in loop
