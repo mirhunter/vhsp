@@ -16,3 +16,6 @@ node_modules/
 # Host-specific rendered deploy artifacts (see deploy/vhsp-render).
 # Never commit these -- they carry one deployment's real username/paths.
 control-plane/deploy/rendered/
+
+# pytest
+.pytest_cache/
