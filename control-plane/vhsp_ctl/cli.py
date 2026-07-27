@@ -7,10 +7,11 @@ from pathlib import Path
 import click
 from cryptography.fernet import Fernet
 
-from vhsp_ctl import audit, auth, backup, config, dns_records, provisioner, registry, secretbox, totp, webauthn
+from vhsp_ctl import __version__, audit, auth, backup, config, dns_records, platform_settings, provisioner, registry, secretbox, totp, update_check, webauthn
 
 
 @click.group()
+@click.version_option(__version__, "-V", "--version", prog_name="vhsp")
 def cli():
     """VHSP control plane -- tenant provisioning."""
 
@@ -504,3 +505,59 @@ def doctor():
 
 if __name__ == "__main__":
     cli()
+
+
+@cli.group()
+def update():
+    """Check whether a newer vhsp release is available.
+
+    Notification only -- nothing here downloads or applies anything. See
+    UPDATING.md for the actual update procedure, and update_check.py's
+    module docstring for why applying updates automatically is
+    deliberately not a feature.
+    """
+
+
+@update.command("check")
+def update_check_cmd():
+    """Ask GitHub for the latest release now (also run daily by
+    vhsp-update-check.timer). Works regardless of the opt-in toggle --
+    running this by hand IS the operator choosing to make the request;
+    the toggle governs the unattended timer and the UI banner."""
+    state = update_check.run_check()
+    if state.get("last_error"):
+        raise click.ClickException(state["last_error"])
+    latest = state.get("latest_tag", "?")
+    if state.get("update_available"):
+        click.echo(f"update available: {latest} (running {__version__})")
+        click.echo(f"  release notes: {state.get('latest_url', '')}")
+        click.echo(f"  how to update: {update_check.UPDATING_DOC_URL}")
+    else:
+        click.echo(f"up to date: running {__version__}, latest release is {latest}")
+
+
+@update.command("status")
+def update_status_cmd():
+    """Show the last cached result without contacting GitHub."""
+    st = update_check.status()
+    click.echo(f"running version:  {st['current_version']}")
+    click.echo(f"latest release:   {st.get('latest_tag') or '(never checked)'}")
+    click.echo(f"last checked:     {st.get('last_checked_at') or '(never)'}")
+    if st.get("last_error"):
+        click.echo(f"last error:       {st['last_error']}")
+    click.echo(f"update available: {'yes' if st['update_available'] else 'no'}")
+    click.echo(f"checks enabled:   {'yes' if config.current_update_check_enabled() else 'no (opt-in)'}")
+
+
+@update.command("enable")
+def update_enable_cmd():
+    """Allow the daily unattended check and the admin-UI banner."""
+    platform_settings.set_update_check_enabled(True, actor="cli")
+    click.echo("update checks enabled")
+
+
+@update.command("disable")
+def update_disable_cmd():
+    """Stop the unattended check and hide the banner."""
+    platform_settings.set_update_check_enabled(False, actor="cli")
+    click.echo("update checks disabled")

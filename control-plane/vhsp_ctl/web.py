@@ -25,8 +25,8 @@ from pathlib import Path
 from flask import Flask, abort, flash, get_flashed_messages, jsonify, redirect, render_template_string, request, session, url_for
 from markupsafe import Markup, escape
 
-from vhsp_ctl import api_auth, audit, auth, backup, dns_records, fail2ban_allowlist, login_throttle, platform_settings, provisioner, registry, toggles, totp, waf, webauthn
-from vhsp_ctl.config import ADMIN_BIND_HOST, ADMIN_BIND_PORT, ADMIN_SESSION_LIFETIME_MINUTES, ADMIN_TRUST_PROXY, API_ENABLED, BACKUP_INTERVAL_CHOICES, DEFAULT_BACKUP_INTERVAL, DEFAULT_BACKUP_RETENTION_COUNT, TENANT_ADMIN_MGMTWEB_EXISTS, current_api_enabled, current_mcp_enabled
+from vhsp_ctl import api_auth, audit, auth, backup, dns_records, fail2ban_allowlist, login_throttle, platform_settings, provisioner, registry, toggles, totp, update_check, waf, webauthn
+from vhsp_ctl.config import ADMIN_BIND_HOST, ADMIN_BIND_PORT, ADMIN_SESSION_LIFETIME_MINUTES, ADMIN_TRUST_PROXY, API_ENABLED, BACKUP_INTERVAL_CHOICES, DEFAULT_BACKUP_INTERVAL, DEFAULT_BACKUP_RETENTION_COUNT, TENANT_ADMIN_MGMTWEB_EXISTS, current_api_enabled, current_mcp_enabled, current_update_check_enabled
 
 app = Flask(__name__)
 app.secret_key = auth.ensure_secret_key()
@@ -487,6 +487,20 @@ LAYOUT = """
   </div>
 </div>
 <div class="shell">
+{% if update_banner %}
+  {# Above the flash loop deliberately: a flash is the result of what you
+     just did and is read immediately, this is standing state. Putting it
+     below would let a routine "Saved." push it out of view. Only the tag
+     and URL are rendered -- never the release body, which is
+     attacker-influenced text if a maintainer account is compromised (see
+     update_check.py). #}
+  <div class="flash" style="display:flex;gap:0.75rem;align-items:center;flex-wrap:wrap">
+    <span>vhsp <strong>{{ update_banner.latest_tag }}</strong> is available.
+    This deployment is running {{ update_banner.current_version }}.</span>
+    <a href="{{ updating_doc_url }}" target="_blank" rel="noopener noreferrer">How to update</a>
+    <a href="{{ update_banner.latest_url }}" target="_blank" rel="noopener noreferrer">Release notes</a>
+  </div>
+{% endif %}
 {% for category, message in get_flashed_messages(with_categories=true) %}
   <div class="flash {{ category }}">{{ message }}</div>
 {% endfor %}
@@ -681,6 +695,28 @@ def humanize_ts(value):
 app.jinja_env.filters["humanize_ts"] = humanize_ts
 
 
+def _update_banner():
+    """Banner state for LAYOUT, or None to render nothing.
+
+    Reads only the cached result the timer wrote -- never makes the HTTP
+    request itself. A page render must not depend on GitHub being
+    reachable, and doing the fetch here would put a network round trip in
+    front of every operator page load and hammer the API once per
+    request rather than once per day.
+
+    Gated on the live toggle, not the frozen constant, so turning the
+    check off hides the banner immediately rather than at the next
+    process restart. Never raises: a broken or unreadable cache file
+    means no banner, not a 500 on every page in the admin UI.
+    """
+    if not current_update_check_enabled():
+        return None
+    try:
+        return update_check.banner_state()
+    except Exception:
+        return None
+
+
 def render(body_template, **ctx):
     # Available to every template rendered this way without each of the
     # ~15 call sites needing to pass it explicitly -- used by TENANT_NAV
@@ -690,7 +726,9 @@ def render(body_template, **ctx):
     has_2fa = webauthn.has_credentials(session.get("username", "")) or totp.has_totp(session.get("username", ""))
     ctx.setdefault("has_2fa", has_2fa)
     body = render_template_string(body_template, **ctx)
-    return render_template_string(LAYOUT, body=body, has_2fa=has_2fa)
+    return render_template_string(LAYOUT, body=body, has_2fa=has_2fa,
+                                  update_banner=_update_banner(),
+                                  updating_doc_url=update_check.UPDATING_DOC_URL)
 
 
 def get_tenant_or_404(domain):
@@ -1203,7 +1241,17 @@ def platform_access_toggle():
     docstrings for why each half exists."""
     action = request.form.get("action")
     actor = f"admin-ui:{session['username']}"
-    if action == "enable_api":
+    if action == "enable_update_check":
+        # No restart and no infrastructure change, unlike the two below:
+        # the banner reads the toggle live on every render, and the timer
+        # re-reads it on each run.
+        platform_settings.set_update_check_enabled(True, actor)
+        flash("Update checks turned on. The first check runs within a day, "
+              "or run `vhsp update check` to check now.", "ok")
+    elif action == "disable_update_check":
+        platform_settings.set_update_check_enabled(False, actor)
+        flash("Update checks turned off.", "ok")
+    elif action == "enable_api":
         platform_settings.set_api_enabled(True, actor)
         _restart_admin_service_deferred()
         flash("REST API turned on -- this admin UI is restarting to apply it. Reload in a few seconds.", "ok")

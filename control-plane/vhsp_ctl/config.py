@@ -331,6 +331,17 @@ API_ENABLED = current_api_enabled()
 # want one without the other.
 MCP_ENABLED = current_mcp_enabled()
 
+
+def current_update_check_enabled() -> bool:
+    """Whether the control plane may contact GitHub to look for a newer
+    release. Off unless explicitly turned on -- see update_check.py's
+    module docstring on why an outbound request is opt-in here. Always
+    read live (same reasoning as current_api_enabled): this one is read
+    per-request to decide whether to render the banner, so a frozen
+    constant would keep an operator's "off" from taking effect until the
+    next process restart."""
+    return _platform_setting("VHSP_UPDATE_CHECK_ENABLED", "update_check_enabled")
+
 # WebAuthn RP ID for the operator admin UI -- must match the real public
 # hostname this UI is actually served at (see webauthn.py's docstring on
 # why this can't be derived from the request). Defaults to the original
