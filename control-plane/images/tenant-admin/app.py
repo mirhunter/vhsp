@@ -120,7 +120,7 @@ import stat
 import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -180,6 +180,18 @@ _MGMTWEB_EXISTS = os.environ.get("TENANT_ADMIN_MGMTWEB_EXISTS", "1").strip().low
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_SECURE"] = not _MGMTWEB_EXISTS
+# Same idle-timeout mechanism as vhsp_ctl/web.py's identical addition --
+# see that one's own comment. Without this, a Flask session cookie carries
+# no expiry at all, so a tenant panel login (or an in-progress 2FA
+# challenge) stayed valid forever once issued.
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(
+    minutes=int(os.environ.get("TENANT_ADMIN_SESSION_LIFETIME_MINUTES", "30"))
+)
+
+
+@app.before_request
+def _make_session_permanent():
+    session.permanent = True
 
 
 @app.after_request
