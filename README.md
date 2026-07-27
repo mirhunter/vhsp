@@ -44,6 +44,50 @@ dangerous PHP functions by default, fail2ban, a per-tenant Coraza/OWASP
 CRS WAF, per-tenant cgroup resource limits, encrypted/signed off-host
 backups, and WebAuthn/TOTP-gated operator and tenant access.
 
+## Requirements
+
+**Host:** Linux with systemd. The control plane provisions Docker
+containers, manages `systemd` units and `fail2ban` jails, and bind-mounts
+per-tenant volumes with `noexec`/`nosuid`/`nodev` — none of which have a
+macOS or Windows equivalent. Development on other platforms works only as
+far as the CLI's non-provisioning commands.
+
+**Python 3.11+** (`pyproject.toml`'s floor; the reference deployment runs
+3.14). Python dependencies install from `pyproject.toml`, but on a real
+deployment use `control-plane/requirements-lock.txt` instead — it pins
+exact versions verified against a live host, where the `>=` floors would
+let a fresh install pull newer, untested transitive dependencies.
+
+**Docker Engine**, from Docker's own apt repo rather than the distro
+package. On a hardened deployment the control-plane user is *not* in the
+`docker` group and reaches Docker only through a scoped socket proxy —
+see `control-plane/README.md`'s "Docker socket exposure".
+
+**Host commands** the control plane shells out to. Most distros ship all
+of these, but `age` and `dig` in particular are worth checking, since
+neither is guaranteed and each fails in its own quiet way:
+
+| Command | Package (Debian/Ubuntu) | Needed for | If missing |
+|---|---|---|---|
+| `age`, `age-keygen` | `age` | Backup encryption keys | Backups can't be configured at all |
+| `dig` | `bind9-dnsutils` | DNS record verification | The DNS page reports every record as *not live*, even correct ones |
+| `ssh`, `scp`, `ssh-keygen` | `openssh-client` | Off-host backup transport, SSH key validation | Backups and tenant SSH-key setup fail |
+| `openssl` | `openssl` | Hashing mailbox passwords | Mailbox creation fails |
+| `sudo` | `sudo` | The seven root-owned wrapper scripts in `deploy/` | Volume hardening, backups, fail2ban jails fail |
+| `fail2ban-client`, `ufw`, `systemctl` | `fail2ban`, `ufw`, systemd | Jails, firewall rules, service management | The corresponding feature is unavailable |
+
+```
+sudo apt-get install -y age bind9-dnsutils openssh-client openssl sudo ufw fail2ban
+```
+
+**Traefik** is expected to already exist as the TLS/routing layer, on a
+Docker network the control plane attaches tenant containers to. It is not
+provisioned by this codebase; `DEPLOYMENT.md` sets it up.
+
+Also assumed by a production install, and covered step by step in
+`DEPLOYMENT.md`: a public IPv4 with real DNS for the host's own hostname,
+~1GB RAM plus swap, and 20GB+ disk.
+
 ## Getting started
 
 The control plane lives in [`control-plane/`](control-plane). To install
@@ -58,8 +102,20 @@ python3 -m venv .venv
 .venv/bin/vhsp tenant create example.local
 ```
 
+`vhsp tenant create` needs the full host setup above — Docker, Traefik,
+and the sudo wrappers installed. Without them the CLI imports and runs,
+but provisioning fails partway through.
+
 For a full install runbook on a fresh single-public-IP host, see
 [`control-plane/DEPLOYMENT.md`](control-plane/DEPLOYMENT.md).
+
+To run the tests:
+
+```
+cd control-plane
+.venv/bin/pip install -e '.[dev]'
+.venv/bin/pytest
+```
 
 ## Repository layout
 
