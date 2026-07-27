@@ -107,6 +107,25 @@ def tenant_set_billing_account_id(domain: str, billing_account_id: str):
                else f"billing account id for {domain} cleared")
 
 
+@tenant.command("reissue-cert")
+@click.argument("domain")
+def tenant_reissue_cert(domain: str):
+    """Ask Let's Encrypt again for DOMAIN's certificates.
+
+    For a tenant created before its DNS pointed here: that first
+    certificate order failed and nothing retries it. Recreates the
+    containers carrying the tenant's HTTP routers, which is what makes
+    Traefik request again. Briefly interrupts the tenant's site.
+    """
+    try:
+        result = provisioner.reissue_tenant_certificates(domain, actor="cli")
+    except provisioner.CertReissueError as e:
+        click.echo(f"error: {e}", err=True)
+        sys.exit(1)
+    click.echo(f"reissue requested for: {', '.join(result['hostnames'])}")
+    click.echo("Traefik orders asynchronously -- check in ~30s with `vhsp tenant show` or the DNS page.")
+
+
 @tenant.command("destroy")
 @click.argument("domain")
 def tenant_destroy(domain: str):
