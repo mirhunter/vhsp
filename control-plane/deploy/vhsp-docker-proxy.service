@@ -13,6 +13,31 @@ Type=simple
 # exposes on loopback (VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 -- see
 # config.py's DOCKER_HOST_URL and the control-plane README's "Docker
 # socket exposure" section for the full reasoning and API allow-list).
+#
+# What the allow-list below does and does NOT buy, stated plainly because
+# it's easy to read more into it than is there: zeroing SWARM/SECRETS/
+# CONFIGS/NODES/BUILD/AUTH/SYSTEM genuinely removes API surface, but the
+# sections that remain (CONTAINERS + POST + EXEC + IMAGES + VOLUMES) are
+# together sufficient to start a container with a host bind mount and
+# exec in it -- i.e. anything that reaches 127.0.0.1:2375 is
+# root-equivalent on this host. That is accepted, not overlooked: those
+# are the calls provisioner.py actually needs. The consequence worth
+# holding onto is that deploy/vhsp-sudoers' tight scoping is a real
+# defence-in-depth layer but NOT a containment boundary on its own --
+# the same compromised process it refuses a root shell to can reach this
+# proxy instead. Narrowing that further means brokering the specific
+# container operations behind a wrapper, the way the sudo scripts
+# already broker mount/fstab/tar; it isn't a config change here.
+#
+# Pinned by digest, not `:latest` -- for the one container mediating all
+# root-equivalent access, "whatever the registry serves today" is a
+# supply-chain gap the rest of this stack doesn't have. This digest is
+# the image vhsp2 is ALREADY running (verified against its RepoDigests),
+# so applying this pin is a no-op there rather than a silent upgrade.
+# Note it is NOT the current `latest`, which has since moved to
+# sha256:1f5038b5... (= tag v0.5.0) -- moving to that is a deliberate
+# upgrade decision with its own testing, not something a redeploy should
+# do by itself, which is precisely what this pin exists to prevent.
 ExecStartPre=-/usr/bin/docker rm -f vhsp-docker-proxy
 ExecStart=/usr/bin/docker run --rm --name vhsp-docker-proxy \
   -p 127.0.0.1:2375:2375 \
@@ -40,7 +65,7 @@ ExecStart=/usr/bin/docker run --rm --name vhsp-docker-proxy \
   -e TASKS=0 \
   -e SESSION=0 \
   -e SYSTEM=0 \
-  tecnativa/docker-socket-proxy:latest
+  tecnativa/docker-socket-proxy@sha256:1f3a6f303320723d199d2316a3e82b2e2685d86c275d5e3deeaf182573b47476
 ExecStop=/usr/bin/docker stop vhsp-docker-proxy
 Restart=on-failure
 RestartSec=2
