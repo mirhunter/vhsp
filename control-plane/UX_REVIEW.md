@@ -11,7 +11,7 @@ feature-coverage cross-check against every function/command in
 infrastructure was touched -- read-only source review plus read-only
 Flask-test-client renders against the live vhsp2 deployment
 (`the control-plane user@vhsp2.dvce.us`, both the operator process and the
-`vhsp-testing-bigchimp-org-tenant-admin` / `vhsp-smoketest-vhsp2-dvce-us-tenant-admin`
+`vhsp-tenant1-example-com-tenant-admin` / `vhsp-smoketest-vhsp2-dvce-us-tenant-admin`
 containers), used to confirm several findings against real rendered HTML
 rather than template source alone.
 
@@ -123,7 +123,7 @@ This is false on two counts. First, "DNS and email" isn't one tab --
 add/reset/delete/quota console -- the exact functionality the manual says
 doesn't exist on the operator side. Verified live against vhsp2: the real
 rendered `/manual` page still contains this exact claim, and
-`/tenants/testing.bigchimp.org/email` renders a working add/reset/delete
+`/tenants/tenant1.example.com/email` renders a working add/reset/delete
 table with three real mailboxes.
 
 **Why it matters:** this is the kind of error that actively misleads --
@@ -146,7 +146,7 @@ tabs.
 
 Confirmed by `grep -rn viewport` across both files: zero matches. Also
 confirmed live -- fetched the real rendered `/email` page from both the
-operator process and the `vhsp-testing-bigchimp-org-tenant-admin`
+operator process and the `vhsp-tenant1-example-com-tenant-admin`
 container on vhsp2; neither response contains a viewport meta tag.
 
 **Why it matters:** without this tag, mobile browsers render the page at
@@ -192,7 +192,7 @@ manager -- has a confirm dialog with specific, well-written warning text
 (often better than a generic "are you sure?", e.g. the file-delete one
 warns specifically about recursive directory deletion). Mailbox delete is
 the sole exception, in **both** apps, at the same conceptual spot.
-Verified live: fetched `/tenants/testing.bigchimp.org/email` (operator)
+Verified live: fetched `/tenants/tenant1.example.com/email` (operator)
 and the tenant-admin container's own `/email` (has 3 real mailboxes, so a
 real Delete button renders) and confirmed zero `onsubmit` on that specific
 form in the actual served HTML.

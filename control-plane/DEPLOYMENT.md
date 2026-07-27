@@ -522,7 +522,7 @@ new WAF container both do): confirmed Traefik round-robins between
 both rather than erroring or dropping the router, so the real cost is
 zero dropped requests, just a few seconds of some requests skipping WAF
 inspection. Already applied for real to both tenants that predated this
-feature (`smoketest.vhsp2.dvce.us`, `testing.bigchimp.org`) -- these
+feature (`smoketest.vhsp2.dvce.us`, `tenant1.example.com`) -- these
 steps are for any *future* tenant found without a `waf_container` (e.g.
 one restored from an old backup). Per tenant, in this exact order:
 ```
