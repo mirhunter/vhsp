@@ -116,6 +116,8 @@ import os
 import re
 import secrets
 import shutil
+import socket
+import ssl
 import stat
 import subprocess
 import sys
@@ -2679,6 +2681,24 @@ available to you.</p>{% endif %}
   is already signed) and DMARC; the MX/mail-A entries only matter once
   you're ready to point this domain's inbound mail at this host.
 </p>
+{% if dns_checked %}
+<div class="card" style="margin-bottom:1rem">
+  <strong>SSL certificate ({{ domain }}):</strong>
+  {% if cert_live %}
+    <span class="badge badge-ok">issued</span>
+  {% else %}
+    <span class="badge badge-warn">not issued yet</span>
+    <p class="muted" style="margin:0.5rem 0 0">
+      This depends on the A record above already being live -- Traefik requests
+      your cert lazily, on the next HTTPS request to your site, not just once
+      when your tenant was created. If DNS wasn't live yet the first time your
+      site was reached over HTTPS, it'll keep failing until DNS is live and
+      something reaches your site over HTTPS again to retrigger it -- simply
+      reloading your site in a browser after DNS is confirmed live is enough.
+    </p>
+  {% endif %}
+</div>
+{% endif %}
 {% if dns_records %}
 <form method="get" style="margin-bottom:1rem">
   <button type="submit" name="check" value="1">Check records</button>
@@ -3782,8 +3802,11 @@ def email():
 
     dns_checked = request.args.get("check") == "1"
     dns_recs = _read_dns_records()
-    if dns_checked and dns_recs:
-        dns_recs = _check_dns_records_live(dns_recs)
+    cert_live = None
+    if dns_checked:
+        if dns_recs:
+            dns_recs = _check_dns_records_live(dns_recs)
+        cert_live = _is_cert_live(TENANT_DOMAIN)
 
     return render(
         EMAIL_PAGE,
@@ -3795,6 +3818,7 @@ def email():
         domain=TENANT_DOMAIN,
         dns_records=dns_recs,
         dns_checked=dns_checked,
+        cert_live=cert_live,
         is_owner=user_role(session["username"]) == "owner",
     )
 
@@ -4040,6 +4064,28 @@ def _is_dns_record_live(kind: str, name: str, expected_value: str) -> bool:
 
 def _check_dns_records_live(records: list[dict]) -> list[dict]:
     return [{**r, "ok": _is_dns_record_live(r["kind"], r["name"], r["value"])} for r in records]
+
+
+def _is_cert_live(hostname: str) -> bool:
+    """Verbatim duplicate of vhsp_ctl.dns_records.is_cert_live, adjusted
+    for this container's own network position -- it has no public IP or
+    loopback path to Traefik (unlike the host-side vhsp_ctl copy, which
+    talks to 127.0.0.1 since Traefik publishes :443 on the host itself),
+    but it sits on the same GATEWAY_NETWORK Traefik does (same network
+    provisioner.py's own container_name="traefik" DNS lookup relies on
+    for real-client-IP handling), so the plain hostname "traefik"
+    resolves to it directly and this needs no IP of its own. Answers
+    "did my cert actually get issued yet" -- separately from whether DNS
+    itself is live, since Traefik only retries the ACME challenge lazily
+    on the next HTTPS request for this hostname, not continuously."""
+    ctx = ssl.create_default_context()
+    try:
+        with socket.create_connection(("traefik", 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=hostname):
+                return True
+    except (OSError, ssl.SSLError) as exc:
+        logger.warning("cert check: TLS handshake for %r raised %r", hostname, exc)
+        return False
 
 
 @app.route("/backups", methods=["GET", "POST"])

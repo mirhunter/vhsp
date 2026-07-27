@@ -2784,6 +2784,38 @@ def tenant_email(domain):
     """, t=t, mailboxes=mailboxes, boxes=boxes, postmaster=toggles.POSTMASTER)
 
 
+CERT_STATUS_TABLE = """
+{% if cert_status %}
+<div class="card" style="overflow-x:auto; margin-bottom:1rem">
+  <table>
+    <thead><tr><th>SSL certificate</th><th>Hostname</th></tr></thead>
+    <tbody>
+    {% for c in cert_status %}
+    <tr class="{{ 'dns-row-ok' if c.ok }}">
+      <td>{{ c.label }}
+        {% if c.ok %} <span class="badge badge-ok">issued</span>
+        {% else %} <span class="badge badge-warn">not issued yet</span>
+        {% endif %}
+      </td>
+      <td><code>{{ c.hostname }}</code></td>
+    </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% if cert_status|rejectattr('ok')|list %}
+  <p class="muted" style="margin:0.5rem 0 0">
+    Traefik requests/retries a cert lazily, on the next HTTPS request for that
+    hostname -- not once at creation time and never again. If the A record(s)
+    above weren't live yet the first time this was reached over HTTPS, the
+    cert request fails until they are; once DNS is live, reloading the site
+    (or this page, via "Check records" below) is what actually retriggers it.
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+"""
+
+
 DNS_RECORDS_TABLE = """
 {% if records %}
 <form method="get" style="margin-bottom:1rem">
@@ -2840,12 +2872,16 @@ def tenant_dns(domain):
         except json.JSONDecodeError:
             pass
     checked = request.args.get("check") == "1"
-    if checked and records:
-        records = dns_records.check_records_live(records)
+    cert_status = []
+    if checked:
+        if records:
+            records = dns_records.check_records_live(records)
+        cert_status = dns_records.cert_status(t.domain, t.admin_hostname)
     return render(TENANT_NAV + """
       <p class="muted">Same suggested records this tenant's own Email page shows them --
       nothing here changes DNS for you.</p>
-    """ + DNS_RECORDS_TABLE, t=t, records=records, error=None, checked=checked)
+    """ + CERT_STATUS_TABLE + DNS_RECORDS_TABLE,
+        t=t, records=records, error=None, checked=checked, cert_status=cert_status)
 
 
 @app.route("/tenants/<domain>/backups", methods=["GET"])
