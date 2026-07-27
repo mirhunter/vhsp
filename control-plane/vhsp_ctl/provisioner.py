@@ -1207,6 +1207,19 @@ def _regenerate_roundcube_routes(client: docker.DockerClient) -> None:
         labels[f"traefik.http.routers.{router_id}.rule"] = f"Host(`webmail.{t.domain}`)"
         labels[f"traefik.http.routers.{router_id}.entrypoints"] = "web"
         labels[f"traefik.http.routers.{router_id}.service"] = "roundcube"
+        # Per-tenant, for the same reason the tenant's own routers get this
+        # treatment: without it these inherit the `web` entrypoint's
+        # certresolver and every tenant creation orders a webmail
+        # certificate that fails while DNS still points elsewhere. Found by
+        # running the prevention change end-to-end -- the apex and admin
+        # hostnames were silent, and webmail.<domain> still burned one
+        # validation per tenant created.
+        #
+        # Decided per router rather than for the container as a whole: this
+        # one container carries every tenant's webmail route, so tenants
+        # whose DNS is ready keep their real certificates while a new one
+        # waits on the fallback.
+        labels.update(_tls_labels(router_id, should_request_cert_for(f"webmail.{t.domain}")))
 
     client.containers.run(
         ROUNDCUBE_IMAGE,
@@ -2590,7 +2603,7 @@ def tenant_has_certresolver(client, tenant) -> bool:
 def reconcile_tenant_certificates(actor: str = "reconciler") -> list[dict]:
     """Give a real certificate to any tenant whose DNS has since caught up.
 
-    The other half of should_request_cert. A tenant created before its A
+    The other half of should_request_cert_for. A tenant created before its A
     records pointed here comes up on the self-signed fallback with no
     resolver, asking Let's Encrypt for nothing; this notices when that
     changes and recreates the containers so Traefik orders at a moment the
