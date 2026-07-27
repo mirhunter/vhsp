@@ -112,6 +112,13 @@ def create_operator(username: str, actor: str = "cli") -> str:
     operators[username] = {
         "password_hash": generate_password_hash(password),
         "created_at": datetime.now(timezone.utc).isoformat(),
+        # Whoever ran this reads the password off their screen to hand it
+        # over, so it's somebody else's choice until the new operator
+        # replaces it -- and it has by then passed through a terminal, a
+        # scrollback buffer, and whatever channel it was sent over. Same
+        # single-use rule images/tenant-admin/'s create_user already
+        # applies to a tenant's team members.
+        "must_change_password": True,
     }
     _write(operators)
     audit.log_action("admin.operator_create", username, actor)
@@ -124,19 +131,52 @@ def check(username: str, password: str) -> bool:
     return entry is not None and check_password_hash(entry["password_hash"], password)
 
 
-def set_password(username: str, password: str, actor: str = "cli") -> None:
+def set_password(username: str, password: str, actor: str = "cli", must_change: bool = False) -> None:
     """Overwrites one operator's password in place -- used both by the
     admin UI's "change my own password" page and by an operator
     resetting another's (e.g. lockout recovery). Caller decides which;
     this function doesn't distinguish "self" from "someone else", same
     as the rest of this flat/equal-privilege model. See create_operator's
-    docstring for why audit logging lives here, not in each caller."""
+    docstring for why audit logging lives here, not in each caller.
+
+    `must_change` marks the new password single-use, forcing a change at
+    next login (see must_change_password below). Callers pass it when the
+    person who typed or generated the password isn't the person who will
+    be logging in with it -- a reset for somebody else, or a generated
+    one echoed to a terminal. It defaults to False because the most
+    common path through here is an operator changing their own password,
+    where forcing them to immediately change it again would be absurd.
+
+    Clears the flag otherwise: every path through here is somebody
+    deliberately setting a password, which is exactly the condition the
+    flag exists to force. Same shape as images/tenant-admin/'s
+    set_user_password.
+    """
     operators = _load()
     if username not in operators:
         raise AuthError(f"no such operator {username!r}")
     operators[username]["password_hash"] = generate_password_hash(password)
+    if must_change:
+        operators[username]["must_change_password"] = True
+    else:
+        operators[username].pop("must_change_password", None)
     _write(operators)
     audit.log_action("admin.operator_password_change", username, actor)
+
+
+def must_change_password(username: str) -> bool:
+    """Whether this operator is holding a password somebody else chose
+    for them and hasn't replaced yet.
+
+    Absent key == False, so every operator already in operators.json
+    before this existed reads as "nothing to do" and no migration is
+    needed. That also means this only ever applies going forward, which
+    is the right default: retroactively locking every existing operator
+    out of the UI until they cycle a password would be a hostile way to
+    ship a hardening change.
+    """
+    entry = _load().get(username)
+    return bool(entry and entry.get("must_change_password"))
 
 
 def remove_operator(username: str, actor: str = "cli") -> None:

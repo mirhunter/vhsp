@@ -146,7 +146,7 @@ def admin_init():
     password = auth.create_operator("admin")
     click.echo("admin username: admin")
     click.echo(f"admin password: {password}")
-    click.echo("(shown once -- store it now)")
+    click.echo("(shown once -- single-use; you'll be asked to choose your own at first login)")
 
 
 @admin.command("add-operator")
@@ -160,7 +160,7 @@ def admin_add_operator(username: str):
         sys.exit(1)
     click.echo(f"operator username: {username}")
     click.echo(f"operator password: {password}")
-    click.echo("(shown once -- store it now)")
+    click.echo("(shown once -- single-use; they'll be asked to choose their own at first login)")
 
 
 @admin.command("list-operators")
@@ -191,10 +191,13 @@ def admin_reset_password(username: str):
         click.echo(f"error: no such operator {username!r}", err=True)
         sys.exit(1)
     password = secrets.token_urlsafe(18)
-    auth.set_password(username, password)
+    # Single-use: this password reaches the operator via a terminal and
+    # whatever channel it gets relayed over, so it's held by more than the
+    # person who will log in with it until they replace it.
+    auth.set_password(username, password, must_change=True)
     click.echo(f"operator username: {username}")
     click.echo(f"operator password: {password}")
-    click.echo("(shown once -- store it now)")
+    click.echo("(shown once -- single-use; they'll be asked to choose their own at next login)")
 
 
 @click.group()
