@@ -126,6 +126,23 @@ def tenant_reissue_cert(domain: str):
     click.echo("Traefik orders asynchronously -- check in ~30s with `vhsp tenant show` or the DNS page.")
 
 
+@tenant.command("reconcile-certs")
+def tenant_reconcile_certs():
+    """Issue real certificates for tenants whose DNS has caught up.
+
+    Run on a timer by vhsp-cert-reconcile.timer. A tenant created before
+    its A records pointed here comes up on Traefik's self-signed cert and
+    orders nothing; this notices once DNS resolves and requests for real.
+    No-op for tenants that already hold a certificate.
+    """
+    flipped = provisioner.reconcile_tenant_certificates()
+    if not flipped:
+        click.echo("nothing to do")
+        return
+    for result in flipped:
+        click.echo(f"requested certificates for {result['domain']}: {', '.join(result['hostnames'])}")
+
+
 @tenant.command("destroy")
 @click.argument("domain")
 def tenant_destroy(domain: str):

@@ -375,8 +375,67 @@ def _create_web_container(
     return container_name
 
 
+# Traefik's `web` entrypoint sets `http.tls.certresolver=letsencrypt`, so
+# any router landing there with no TLS config of its own inherits it and
+# an ACME order fires the moment Traefik discovers the router -- at
+# container start, before anyone has had a chance to point DNS here. Those
+# orders fail and never retry (issue #18), and each one spends part of the
+# five failed validations Let's Encrypt allows per hostname per hour.
+#
+# A router that declares its OWN `tls` does not inherit the entrypoint's
+# resolver. Verified directly on a live host: `tls=true` alone produced
+# zero ACME orders and served Traefik's self-signed fallback; adding
+# `tls.certresolver=letsencrypt` to the same router produced an order
+# immediately. That is the whole mechanism behind provisioning without
+# burning validations.
+#
+# Note this is deliberately still TLS, not plain HTTP. Serving a tenant --
+# and especially their admin panel, which takes a password -- over :80
+# while waiting for DNS was considered and rejected: the panel should never
+# be reachable unencrypted, a self-signed warning is the honest signal that
+# setup is incomplete, and the platform-wide HTTP->HTTPS redirect (issue
+# #20) would defeat a :80 router anyway, since it matches HostRegexp(`^.+$`)
+# at priority MaxInt64-1 and outranks any Host() rule.
+def _tls_labels(router: str, with_certresolver: bool) -> dict:
+    """TLS labels for one router. Without `with_certresolver` the router
+    serves the self-signed fallback and asks Let's Encrypt for nothing."""
+    labels = {f"traefik.http.routers.{router}.tls": "true"}
+    if with_certresolver:
+        labels[f"traefik.http.routers.{router}.tls.certresolver"] = "letsencrypt"
+    return labels
+
+
+def should_request_cert(domain: str) -> bool:
+    """Is this tenant's DNS already pointing here, i.e. would an ACME
+    order actually succeed right now?
+
+    Used at every point a router-bearing container is created, not just
+    at provisioning. That makes the decision self-correcting rather than
+    something to remember: a tenant whose DNS is live keeps its resolver
+    through an unrelated recreate (the DB-password reset path recreates
+    tenant-admin, and silently dropping the resolver there would downgrade
+    a working tenant to a self-signed cert), and a tenant whose DNS is
+    still wrong stays off the resolver and burns no validations.
+
+    Both hostnames must be live. They share one decision because they are
+    created together, and issuing for one while the other still 404s the
+    challenge just spends a validation on the half that cannot succeed.
+
+    False when the platform IP isn't configured -- with nothing to compare
+    against there is no evidence DNS is right, and the safe reading of no
+    evidence is "don't order yet".
+    """
+    if not dns_records.PLATFORM_PUBLIC_IP:
+        return False
+    return all(
+        dns_records.is_record_live("A", host, dns_records.PLATFORM_PUBLIC_IP)
+        for host in (domain, f"admin.{domain}")
+    )
+
+
 def _create_waf_container(
     client: docker.DockerClient, slug: str, domain: str, phpconf_host_path: str,
+    with_certresolver: bool = False,
 ) -> str:
     """Coraza WAF (OWASP Core Rule Set) reverse-proxy sidecar -- owns the
     public Traefik router _create_web_container used to hold directly,
@@ -454,6 +513,7 @@ def _create_waf_container(
             f"traefik.http.routers.{router_id}.rule": f"Host(`{domain}`)",
             f"traefik.http.routers.{router_id}.entrypoints": "web",
             f"traefik.http.services.{router_id}.loadbalancer.server.port": str(WAF_INTERNAL_PORT),
+            **_tls_labels(router_id, with_certresolver),
             "vhsp.tenant.slug": slug,
             "vhsp.tenant.domain": domain,
         },
@@ -808,6 +868,7 @@ def _create_tenant_admin_container(
     mail_volume: str,
     ssh_port: int,
     sftp_user: str,
+    with_certresolver: bool = False,
 ) -> tuple[str, str, str]:
     """Per-tenant self-service admin page (hand-rolled Flask -- see
     images/tenant-admin/). Toggles PHP functions, the 404-fallback
@@ -984,6 +1045,7 @@ def _create_tenant_admin_container(
             f"traefik.http.routers.{router_id}-public.rule": f"Host(`{admin_hostname}`)",
             f"traefik.http.routers.{router_id}-public.entrypoints": "web",
             f"traefik.http.routers.{router_id}-public.service": router_id,
+            **_tls_labels(f"{router_id}-public", with_certresolver),
             "vhsp.tenant.slug": slug,
             "vhsp.tenant.domain": domain,
         },
@@ -1210,7 +1272,13 @@ def create_tenant(domain: str, actor: str = "cli") -> registry.Tenant:
         client, slug, domain, volume_name, phpconf_volume, logs_volume,
         db_network, db_container_name, db_name, db_user, db_password,
     )
-    waf_container_name = _create_waf_container(client, slug, domain, phpconf_host_path)
+    # Decided once and reused for both routers below so they can't
+    # disagree. If DNS isn't pointing here yet, both come up on the
+    # self-signed fallback and ask Let's Encrypt for nothing; the backup
+    # reconciler picks them up once DNS resolves. See should_request_cert.
+    wants_cert = should_request_cert(domain)
+    waf_container_name = _create_waf_container(client, slug, domain, phpconf_host_path,
+                                               with_certresolver=wants_cert)
 
     sftp_user = _generate_sftp_user(slug)
     sftp_container_name, ssh_keys_volume, ssh_keys_host_path = _create_sftp_container(
@@ -1225,7 +1293,7 @@ def create_tenant(domain: str, actor: str = "cli") -> registry.Tenant:
     tenant_admin_container, admin_hostname, tenant_admin_password = _create_tenant_admin_container(
         client, slug, domain, phpconf_volume, phpconf_host_path, logs_volume, volume_name,
         db_network, db_container_name, db_name, db_user, db_password, mail_volume,
-        ssh_port, sftp_user,
+        ssh_port, sftp_user, with_certresolver=wants_cert,
     )
 
     tenant = registry.Tenant(
@@ -2037,6 +2105,10 @@ def reset_tenant_db_password(domain: str, actor: str = "cli") -> str:
         tenant.logs_volume, tenant.webroot_volume, tenant.db_network, tenant.db_container,
         tenant.db_name, tenant.db_user, new_password, tenant.mail_volume,
         tenant.ssh_port, tenant.sftp_user,
+        # Re-derived, not defaulted: this recreate is about the DB
+        # password and must not quietly downgrade a tenant that already
+        # holds a real certificate.
+        with_certresolver=should_request_cert(tenant.domain),
     )
 
     audit.log_action("tenant.reset_db_password", domain, actor)
@@ -2450,7 +2522,8 @@ def reissue_tenant_certificates(domain: str, actor: str = "cli") -> dict:
             client.containers.get(tenant.waf_container).remove(force=True)
         except NotFound:
             pass
-        name = _create_waf_container(client, tenant.slug, tenant.domain, tenant.phpconf_host_path)
+        name = _create_waf_container(client, tenant.slug, tenant.domain, tenant.phpconf_host_path,
+                                    with_certresolver=True)
         registry.set_tenant_waf_container(domain, name)
         recreated.append(domain)
 
@@ -2462,9 +2535,64 @@ def reissue_tenant_certificates(domain: str, actor: str = "cli") -> dict:
         client, tenant.slug, tenant.domain, tenant.phpconf_volume, tenant.phpconf_host_path,
         tenant.logs_volume, tenant.webroot_volume, tenant.db_network, tenant.db_container,
         tenant.db_name, tenant.db_user, tenant.db_password, tenant.mail_volume,
-        tenant.ssh_port, tenant.sftp_user,
+        tenant.ssh_port, tenant.sftp_user, with_certresolver=True,
     )
     recreated.append(admin_hostname)
 
     audit.log_action("tenant.cert_reissue", domain, actor)
     return {"domain": domain, "hostnames": recreated}
+
+
+def tenant_has_certresolver(client, tenant) -> bool:
+    """Does this tenant's public router currently carry the resolver?
+
+    Read off the running container's own labels rather than tracked in
+    the registry. The labels are what Traefik actually acts on, so they
+    are the only answer that cannot drift -- a registry column would be a
+    second copy of the truth that a hand-run recreate_*.py could silently
+    invalidate.
+
+    False if the container is missing, which is the useful answer for a
+    reconciler: nothing to flip, and something else is already wrong.
+    """
+    if not tenant.waf_container:
+        return False
+    try:
+        labels = client.containers.get(tenant.waf_container).labels or {}
+    except NotFound:
+        return False
+    return any(k.endswith(".tls.certresolver") for k in labels)
+
+
+def reconcile_tenant_certificates(actor: str = "reconciler") -> list[dict]:
+    """Give a real certificate to any tenant whose DNS has since caught up.
+
+    The other half of should_request_cert. A tenant created before its A
+    records pointed here comes up on the self-signed fallback with no
+    resolver, asking Let's Encrypt for nothing; this notices when that
+    changes and recreates the containers so Traefik orders at a moment the
+    challenge can actually succeed.
+
+    Skips tenants that already carry the resolver, so it is a no-op on a
+    healthy platform -- it does not recreate containers to no purpose, and
+    a tenant whose certificate merely failed for some other reason is left
+    for the explicit reissue action rather than being retried on a timer
+    into the rate limit.
+
+    Per-tenant failures are swallowed for the same reason run_all_due_backups
+    swallows them: one tenant's problem must not stop the pass reaching the
+    rest. Returns what it changed, for the caller to log.
+    """
+    client = _client()
+    flipped = []
+    for tenant in registry.list_tenants():
+        try:
+            if tenant_has_certresolver(client, tenant):
+                continue
+            if not should_request_cert(tenant.domain):
+                continue
+            result = reissue_tenant_certificates(tenant.domain, actor=actor)
+            flipped.append(result)
+        except Exception:
+            continue
+    return flipped

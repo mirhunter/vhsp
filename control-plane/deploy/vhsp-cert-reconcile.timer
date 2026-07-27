@@ -1,0 +1,14 @@
+[Unit]
+Description=Reconcile tenant certificates every few minutes
+
+[Timer]
+# Frequent enough that a tenant fixing their DNS sees a real certificate
+# without asking anyone, slow enough to stay cheap. Cost when idle is one
+# container-label read per tenant: the DNS lookups only happen for tenants
+# that are actually still on the self-signed fallback, so a platform with
+# nothing pending does no lookups at all.
+OnCalendar=*:0/5
+Persistent=true
+
+[Install]
+WantedBy=timers.target

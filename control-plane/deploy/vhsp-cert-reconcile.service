@@ -1,0 +1,26 @@
+[Unit]
+Description=VHSP tenant certificate reconciler
+After=network-online.target docker.service vhsp-docker-proxy.service
+Wants=network-online.target vhsp-docker-proxy.service
+
+[Service]
+Type=oneshot
+User=__VHSP_USER__
+Group=__VHSP_USER__
+WorkingDirectory=__VHSP_HOME__/vhsp-control-plane
+# Needs Docker: it reads router labels off running containers to find
+# tenants still on the self-signed fallback, and recreates them when their
+# DNS has caught up. Same scoped proxy as every other vhsp unit.
+Environment=VHSP_DOCKER_HOST=tcp://127.0.0.1:2375
+# Must match the operator UI's own value -- this is what tenant DNS is
+# checked against before asking Let's Encrypt for anything. With it unset
+# the reconciler correctly does nothing rather than guessing.
+Environment=VHSP_PLATFORM_PUBLIC_IP=
+ExecStart=__VHSP_HOME__/vhsp-control-plane/.venv/bin/vhsp tenant reconcile-certs
+
+# Recreating a tenant's containers goes through the Docker proxy, not sudo
+# -- nothing here needs a privileged helper.
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
