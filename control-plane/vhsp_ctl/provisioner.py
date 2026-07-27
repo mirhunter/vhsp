@@ -417,9 +417,25 @@ def should_request_cert(domain: str) -> bool:
     a working tenant to a self-signed cert), and a tenant whose DNS is
     still wrong stays off the resolver and burns no validations.
 
-    Both hostnames must be live. They share one decision because they are
-    created together, and issuing for one while the other still 404s the
-    challenge just spends a validation on the half that cannot succeed.
+    Every hostname this platform issues a certificate for must be live,
+    and the list must stay equal to the set of routers that carry a
+    certresolver -- apex, admin, and webmail. They share one decision
+    because they are provisioned together, and issuing for one while
+    another still 404s the challenge spends a validation on the half that
+    cannot succeed.
+
+    webmail is included even though its router lives on the shared
+    Roundcube container: a tenant can easily have apex and admin correct
+    while webmail is missing, and gating that router on the other two
+    hostnames -- as it was until this -- ordered a certificate for a name
+    whose challenge could not be answered.
+
+    `www.<domain>` is deliberately NOT here, despite being one of the
+    records dns_records suggests. Nothing routes it: there is no
+    Host(`www.<domain>`) rule anywhere, so no certificate is requested
+    for it and blocking on it would stall certificates on a record that
+    changes nothing. That gap is real but separate -- a tenant who
+    follows the suggested records today gets a 404 on www.
 
     False when the platform IP isn't configured -- with nothing to compare
     against there is no evidence DNS is right, and the safe reading of no
@@ -429,7 +445,7 @@ def should_request_cert(domain: str) -> bool:
         return False
     return all(
         dns_records.is_record_live("A", host, dns_records.PLATFORM_PUBLIC_IP)
-        for host in (domain, f"admin.{domain}")
+        for host in (domain, f"admin.{domain}", f"webmail.{domain}")
     )
 
 

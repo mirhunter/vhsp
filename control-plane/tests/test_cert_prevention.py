@@ -167,3 +167,44 @@ def test_one_tenants_failure_does_not_stop_the_pass(recon):
     result = provisioner.reconcile_tenant_certificates()
     assert calls == ["second.example.com"]
     assert len(result) == 1
+
+
+# --- the gate must cover exactly what we issue for ---------------------
+
+def test_the_gate_covers_webmail_too(dns):
+    """We request certificates for apex, admin AND webmail. Checking only
+    the first two meant a tenant with those correct but webmail missing
+    still ordered a webmail certificate whose challenge could not be
+    answered."""
+    checked = []
+    dns.setattr(provisioner.dns_records, "is_record_live",
+                lambda kind, host, ip: checked.append(host) or True)
+    provisioner.should_request_cert("t.example.com")
+    assert set(checked) == {"t.example.com", "admin.t.example.com", "webmail.t.example.com"}
+
+
+def test_a_missing_webmail_record_blocks_issuance(dns):
+    dns.setattr(provisioner.dns_records, "is_record_live",
+                lambda kind, host, ip: not host.startswith("webmail."))
+    assert not provisioner.should_request_cert("t.example.com")
+
+
+def test_the_gate_matches_the_routers_that_carry_a_resolver():
+    """Structural guard against the two drifting apart. Every Host() rule
+    given a certresolver needs a corresponding DNS check, or we order for
+    a name nobody verified."""
+    import re
+    from pathlib import Path
+    src = Path(provisioner.__file__).read_text()
+
+    gate = src[src.index("def should_request_cert"):]
+    gate = gate[:gate.index("\ndef ", 1)]
+    checked_suffixes = set(re.findall(r'f"([a-z]+)\.\{domain\}"', gate)) | {""}
+
+    # Router rules that get _tls_labels applied somewhere in the module.
+    assert "webmail" in checked_suffixes, "webmail router carries a resolver but isn't gated"
+    assert "admin" in checked_suffixes, "admin router carries a resolver but isn't gated"
+    assert "www" not in checked_suffixes, (
+        "www has no router, so gating on it would stall certificates on a "
+        "record that routes nothing -- see the docstring"
+    )
