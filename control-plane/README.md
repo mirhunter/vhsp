@@ -302,11 +302,20 @@ tenant's own panel login) expire after 30 minutes idle by default --
 `VHSP_ADMIN_SESSION_LIFETIME_MINUTES` / `TENANT_ADMIN_SESSION_LIFETIME_MINUTES`
 to change it.
 
-The `/login` page (only that page -- not the `/login/2fa` challenge that
-follows it) embeds a Buy Me a Coffee button (third-party script,
-`cdnjs.buymeacoffee.com`), since it's the single most publicly-reachable
-page on the whole platform -- reachable by anyone who hits the
-deployment's hostname, no auth required to see it.
+The `/login` page carries a plain Buy Me a Coffee **link**, since it's the
+single most publicly-reachable page on the whole platform -- reachable by
+anyone who hits the deployment's hostname, no auth required to see it.
+
+It used to be the vendor's own `<script>` widget from
+`cdnjs.buymeacoffee.com`, and the reasoning above is exactly why that was
+the wrong page for it: remote JavaScript there executes with DOM access
+to the operator credential form, so a CDN compromise or a vendor-side
+change is indistinguishable from normal operation, and there's no CSP to
+fall back on (see `_security_headers`' docstring). **No page in either
+admin UI may load third-party JavaScript** -- that's why CodeMirror and
+Swagger UI are vendored into `static/` rather than pulled from a CDN at
+runtime. `tests/test_authorization_coverage.py` fails the build if a
+remote `<script>`/`<link>` reappears in the operator UI.
 
 ### Billing account ID
 
