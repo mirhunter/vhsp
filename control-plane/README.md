@@ -143,12 +143,29 @@ routinely, not a hypothetical: nothing before this pass ever surfaced
 just looked broken with no indication of why or when it would resolve
 itself.
 
-**What's implemented is visibility, not automated retry** -- there's
-nothing to retry in code. Traefik already retries the ACME challenge on
-its own, lazily, the next time it sees an HTTPS request for that
-hostname; once the tenant's DNS is actually live, the very next request
-to their site (a reload in a browser, or literally just clicking "Check
-records" again) is what completes issuance. `dns_records.is_cert_live()`
+**What's implemented is visibility, not recovery** -- and the
+distinction matters, because a failed certificate order does not fix
+itself. Traefik orders each certificate when it discovers the router
+(the tenant's containers starting), not on first visit: the resolver is
+set at the entrypoint in DEPLOYMENT.md's Traefik config, so every router
+on `web` is ordered as soon as it appears. If the A record wasn't
+already pointing here at that moment, the order fails -- and nothing
+retries it.
+
+Observed directly on a live host: a tenant created before its DNS was
+correct produced five failed orders within sixteen seconds, then no
+further attempt for the next hour. That silence held across repeated
+HTTPS requests to those hostnames after DNS had become correct, and
+across a restart of the tenant's own containers -- the labels are
+identical on restart, so Traefik sees no configuration change and never
+re-resolves. The tenant sat on Traefik's self-signed fallback until
+Traefik itself was restarted, which briefly drops TLS for every tenant
+on the host.
+
+So a `not issued` badge means an operator has to act; it will not clear
+on its own. A per-tenant "reissue now" action is the missing piece
+(issue #18) -- until it exists, the only known recovery is restarting
+Traefik. `dns_records.is_cert_live()`
 answers "has a real, CA-trusted cert actually been issued for this
 hostname yet" by making a direct TLS handshake to Traefik itself
 (loopback `127.0.0.1:443` from the host-side operator UI, the `traefik`

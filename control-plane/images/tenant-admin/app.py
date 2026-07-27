@@ -2689,12 +2689,16 @@ available to you.</p>{% endif %}
   {% else %}
     <span class="badge badge-warn">not issued yet</span>
     <p class="muted" style="margin:0.5rem 0 0">
-      This depends on the A record above already being live -- Traefik requests
-      your cert lazily, on the next HTTPS request to your site, not just once
-      when your tenant was created. If DNS wasn't live yet the first time your
-      site was reached over HTTPS, it'll keep failing until DNS is live and
-      something reaches your site over HTTPS again to retrigger it -- simply
-      reloading your site in a browser after DNS is confirmed live is enough.
+      Your certificate is requested when your site is first set up, and it can
+      only succeed if the A record above is already pointing here at that
+      moment. If it wasn't, the request failed and <strong>does not retry by
+      itself</strong> -- reloading your site won't fix it, even once the DNS is
+      correct.
+      <br><br>
+      Get the A record above pointing here first, then <strong>ask your
+      host</strong> to reissue the certificate. Until then your site still
+      works, but browsers will warn visitors that the connection isn't
+      private.
     </p>
   {% endif %}
 </div>
@@ -4076,8 +4080,12 @@ def _is_cert_live(hostname: str) -> bool:
     for real-client-IP handling), so the plain hostname "traefik"
     resolves to it directly and this needs no IP of its own. Answers
     "did my cert actually get issued yet" -- separately from whether DNS
-    itself is live, since Traefik only retries the ACME challenge lazily
-    on the next HTTPS request for this hostname, not continuously."""
+    itself is live, because the two are not the same event and do not
+    reliably agree. Traefik orders the certificate when it discovers the
+    router (container start), not on first visit, and a failed order does
+    not retry on its own -- not on later HTTPS requests, and not when the
+    tenant's containers restart. See vhsp_ctl/dns_records.is_cert_live's
+    docstring for the observed evidence and issue #18."""
     ctx = ssl.create_default_context()
     try:
         with socket.create_connection(("traefik", 443), timeout=5) as sock:

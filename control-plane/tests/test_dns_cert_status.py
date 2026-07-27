@@ -2,7 +2,8 @@
 visibility check added alongside the existing DNS-liveness check (see
 README's "DNS records and SSL certificate status" section for why the
 two are checked separately: Traefik requests/retries a tenant's cert
-lazily on the next HTTPS request for that hostname, which can disagree
+when Traefik discovers the router, not on request, and never retried
+afterwards -- so cert state can disagree
 with DNS-record liveness for a while).
 """
 import socket
@@ -26,7 +27,17 @@ def test_is_cert_live_false_on_handshake_failure(monkeypatch):
     server.bind(("127.0.0.1", 0))
     server.listen(1)
     port = server.getsockname()[1]
-    monkeypatch.setattr(socket, "create_connection", lambda addr, timeout=None: socket.create_connection((addr[0], port), timeout=timeout))
+
+    # Bind the real function before patching. Referring to
+    # `socket.create_connection` from inside the replacement resolves the
+    # patched attribute, so the lambda calls itself until the stack runs
+    # out -- which is what this test did before, failing with a
+    # RecursionError that looked like a handshake failure.
+    real_create_connection = socket.create_connection
+    monkeypatch.setattr(
+        socket, "create_connection",
+        lambda addr, timeout=None: real_create_connection((addr[0], port), timeout=timeout),
+    )
     try:
         assert dns_records.is_cert_live("example.com") is False
     finally:

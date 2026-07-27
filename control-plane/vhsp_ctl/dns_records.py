@@ -121,14 +121,31 @@ def is_cert_live(hostname: str) -> bool:
     self-signed fallback (what it hands back for any SNI it has no ACME
     cert for)? This is the direct answer to "did my cert actually get
     issued" -- distinct from (and checked separately from) whether the
-    DNS records above are live, because the two aren't the same event:
-    Traefik requests/retries a cert lazily, on the next TLS handshake for
-    that SNI, not once-at-provisioning-time and never again. A tenant
-    created before its DNS was live will keep failing the ACME HTTP-01
-    challenge on every handshake attempt until the A record actually
-    resolves here -- there's nothing to retry in code, just DNS
-    propagating and then one more HTTPS request coming in to retrigger
-    Traefik's own attempt.
+    DNS records above are live, because the two are neither the same
+    event nor reliably in the same state.
+
+    Traefik requests each router's certificate when it *discovers the
+    router*, i.e. as the tenant's containers start, not on the first
+    HTTPS request and not on any later one. DEPLOYMENT.md sets the
+    resolver at the entrypoint
+    (`--entrypoints.web.http.tls.certresolver=letsencrypt`), so every
+    router on `web` gets a certificate order the moment it appears, with
+    no `certresolver` label anywhere in provisioner.py.
+
+    **A failed order does not heal itself.** Observed directly on vhsp2:
+    a tenant created at 15:49 before its A record pointed here produced
+    five failed ACME orders within sixteen seconds and then nothing --
+    no further attempt over the following hour, including across repeated
+    HTTPS handshakes to those exact hostnames once DNS *was* correct, and
+    including after restarting the tenant's own containers (identical
+    labels, so Traefik sees no configuration change and does not
+    re-resolve). It stayed on the self-signed fallback until Traefik
+    itself was restarted, which is currently the only known recovery and
+    is platform-wide.
+
+    So this function answers a question an operator otherwise cannot see
+    the answer to, and the honest guidance attached to a False result is
+    "this needs operator action", not "reload the page". See issue #18.
 
     Talks to Traefik over loopback (this platform's own Traefik always
     publishes :443 on the host per DEPLOYMENT.md, and this process

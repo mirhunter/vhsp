@@ -2804,11 +2804,13 @@ CERT_STATUS_TABLE = """
   </table>
   {% if cert_status|rejectattr('ok')|list %}
   <p class="muted" style="margin:0.5rem 0 0">
-    Traefik requests/retries a cert lazily, on the next HTTPS request for that
-    hostname -- not once at creation time and never again. If the A record(s)
-    above weren't live yet the first time this was reached over HTTPS, the
-    cert request fails until they are; once DNS is live, reloading the site
-    (or this page, via "Check records" below) is what actually retriggers it.
+    Traefik requests each certificate when the tenant's containers start, not
+    on first visit. If the A record above wasn't already pointing here at that
+    moment, the request failed and <strong>will not retry on its own</strong> --
+    reloading the site does not retrigger it, and neither does restarting the
+    tenant's containers. Fixing the DNS is necessary but not sufficient.
+    Recovering a tenant in this state currently needs a Traefik restart, which
+    briefly interrupts TLS for every tenant on this host; see issue #18.
   </p>
   {% endif %}
 </div>
