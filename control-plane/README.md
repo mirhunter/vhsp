@@ -297,7 +297,10 @@ Login is form-based (session cookie), not HTTP Basic -- per-operator
 identity plus a second factor once one is registered from `/account`
 (WebAuthn and/or TOTP, see "Two-factor authentication" below). Multiple
 operators are supported but flat/equal-privilege; there's no
-per-role scoping yet (see "Known gaps" below).
+per-role scoping yet (see "Known gaps" below). Sessions (here and on a
+tenant's own panel login) expire after 30 minutes idle by default --
+`VHSP_ADMIN_SESSION_LIFETIME_MINUTES` / `TENANT_ADMIN_SESSION_LIFETIME_MINUTES`
+to change it.
 
 The `/login` page (only that page -- not the `/login/2fa` challenge that
 follows it) embeds a Buy Me a Coffee button (third-party script,

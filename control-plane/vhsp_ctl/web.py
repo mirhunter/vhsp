@@ -18,7 +18,7 @@ import json
 import secrets
 import subprocess
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import wraps
 from pathlib import Path
 
@@ -26,7 +26,7 @@ from flask import Flask, abort, flash, get_flashed_messages, jsonify, redirect, 
 from markupsafe import Markup, escape
 
 from vhsp_ctl import api_auth, audit, auth, backup, dns_records, fail2ban_allowlist, login_throttle, platform_settings, provisioner, registry, toggles, totp, waf, webauthn
-from vhsp_ctl.config import ADMIN_BIND_HOST, ADMIN_BIND_PORT, ADMIN_TRUST_PROXY, API_ENABLED, BACKUP_INTERVAL_CHOICES, DEFAULT_BACKUP_INTERVAL, DEFAULT_BACKUP_RETENTION_COUNT, TENANT_ADMIN_MGMTWEB_EXISTS, current_api_enabled, current_mcp_enabled
+from vhsp_ctl.config import ADMIN_BIND_HOST, ADMIN_BIND_PORT, ADMIN_SESSION_LIFETIME_MINUTES, ADMIN_TRUST_PROXY, API_ENABLED, BACKUP_INTERVAL_CHOICES, DEFAULT_BACKUP_INTERVAL, DEFAULT_BACKUP_RETENTION_COUNT, TENANT_ADMIN_MGMTWEB_EXISTS, current_api_enabled, current_mcp_enabled
 
 app = Flask(__name__)
 app.secret_key = auth.ensure_secret_key()
@@ -40,6 +40,20 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 # TLS-terminating hop in front of this" is the right one to reuse here,
 # rather than assuming HTTPS unconditionally.
 app.config["SESSION_COOKIE_SECURE"] = ADMIN_TRUST_PROXY
+app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(minutes=ADMIN_SESSION_LIFETIME_MINUTES)
+
+
+@app.before_request
+def _make_session_permanent():
+    """Opts every session (including the pending-2FA, pre-`username` state)
+    into PERMANENT_SESSION_LIFETIME above instead of Flask's default
+    non-permanent cookie, which carries no expiry at all and would
+    otherwise leave a stolen or left-open browser tab's session valid
+    forever. Flask refreshes the cookie's expiry on each request by
+    default (SESSION_REFRESH_EACH_REQUEST), so this is an idle timeout: an
+    operator actively working never hits it, only a session that's sat
+    untouched past ADMIN_SESSION_LIFETIME_MINUTES."""
+    session.permanent = True
 
 
 @app.after_request

@@ -232,6 +232,15 @@ DEFAULT_TENANT_QUOTA_BYTES = 200 * 1024 * 1024
 ADMIN_BIND_HOST = os.environ.get("VHSP_ADMIN_BIND_HOST", "127.0.0.1")
 ADMIN_BIND_PORT = int(os.environ.get("VHSP_ADMIN_BIND_PORT", "8000"))
 
+# How long an idle operator session cookie stays valid (web.py sets
+# session.permanent + PERMANENT_SESSION_LIFETIME from this, and refreshes
+# the cookie's expiry on every request -- Flask's SESSION_REFRESH_EACH_REQUEST
+# default -- so this is an idle timeout, not a fixed session length: an
+# operator actively using the UI never gets logged out mid-task). Previously
+# unset entirely, which for a signed-but-unexpiring Flask session cookie
+# meant a stolen/left-open cookie stayed valid indefinitely.
+ADMIN_SESSION_LIFETIME_MINUTES = int(os.environ.get("VHSP_ADMIN_SESSION_LIFETIME_MINUTES", "30"))
+
 # mcp_server.py's own bind address -- a separate process/port from the
 # admin UI above, not a path on the same one, since fastmcp is
 # ASGI/Starlette-based and vhsp-admin.service's gunicorn/Flask stack is
