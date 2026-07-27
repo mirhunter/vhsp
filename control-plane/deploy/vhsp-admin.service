@@ -5,11 +5,11 @@ Wants=network-online.target vhsp-docker-proxy.service
 
 [Service]
 Type=simple
-User=astjohn
-Group=astjohn
-WorkingDirectory=/home/astjohn/vhsp-control-plane
+User=__VHSP_USER__
+Group=__VHSP_USER__
+WorkingDirectory=__VHSP_HOME__/vhsp-control-plane
 # Talks to Docker through vhsp-docker-proxy.service's scoped API, not the
-# raw socket -- astjohn is deliberately NOT in the `docker` group on a
+# raw socket -- __VHSP_USER__ is deliberately NOT in the `docker` group on a
 # hardened deployment. See config.py's DOCKER_HOST_URL docstring and the
 # control-plane README's "Docker socket exposure" section.
 Environment=VHSP_DOCKER_HOST=tcp://127.0.0.1:2375
@@ -44,12 +44,12 @@ Environment=VHSP_ADMIN_TRUST_PROXY=1
 # already succeeded) -- discovered via the new operator API's own
 # create_tenant round-trip test, but it was already a latent bug in this
 # same route as reached from the web UI's own "New tenant" form.
-ExecStart=/bin/sh -c 'exec /home/astjohn/vhsp-control-plane/.venv/bin/gunicorn --workers 2 --timeout 180 --bind ${VHSP_ADMIN_BIND_HOST}:${VHSP_ADMIN_BIND_PORT} vhsp_ctl.web:app'
+ExecStart=/bin/sh -c 'exec __VHSP_HOME__/vhsp-control-plane/.venv/bin/gunicorn --workers 2 --timeout 180 --bind ${VHSP_ADMIN_BIND_HOST}:${VHSP_ADMIN_BIND_PORT} vhsp_ctl.web:app'
 Restart=on-failure
 RestartSec=2
 
 # The control plane's provisioner shells out to sudo for mount/fstab
-# hardening (see provisioner.py's _harden_host_dir) -- astjohn's
+# hardening (see provisioner.py's _harden_host_dir) -- __VHSP_USER__'s
 # passwordless sudo is what makes that work, same as the CLI path.
 NoNewPrivileges=false
 

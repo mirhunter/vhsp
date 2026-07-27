@@ -5,9 +5,9 @@ Requires=docker.service
 
 [Service]
 Type=simple
-# Deliberately root, not astjohn -- this is the one piece that still
+# Deliberately root, not __VHSP_USER__ -- this is the one piece that still
 # needs raw docker.sock access, by design. The whole point of this unit
-# is that nothing else does: astjohn (which runs vhsp-admin/vhsp-backup/
+# is that nothing else does: __VHSP_USER__ (which runs vhsp-admin/vhsp-backup/
 # vhsp-backup-reconcile/the CLI) is removed from the `docker` group, and
 # those processes reach Docker only through the scoped API this proxy
 # exposes on loopback (VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 -- see

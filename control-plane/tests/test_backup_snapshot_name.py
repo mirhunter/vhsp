@@ -21,12 +21,12 @@ WORKDIR = Path("/srv/vhsp/backup/work/restore-123")
 # Names that, joined onto the restore working directory, land somewhere
 # outside it entirely -- the actual write primitive.
 ESCAPES_WORKDIR = [
-    "/home/astjohn/.ssh/authorized_keys",       # absolute REPLACES the base
+    "/home/vhsp/.ssh/authorized_keys",       # absolute REPLACES the base
     "/etc/cron.d/vhsp",
     "../../keys/operator_signing_ed25519",      # reaches the backup keys dir
     "../../keys/operator_encryption_age.key",
     "../snapshot.tar.age",
-    "../../../../home/astjohn/.ssh/authorized_keys",
+    "../../../../home/vhsp/.ssh/authorized_keys",
     "..",
 ]
 

@@ -5,9 +5,9 @@ Wants=network-online.target vhsp-docker-proxy.service
 
 [Service]
 Type=simple
-User=astjohn
-Group=astjohn
-WorkingDirectory=/home/astjohn/vhsp-control-plane
+User=__VHSP_USER__
+Group=__VHSP_USER__
+WorkingDirectory=__VHSP_HOME__/vhsp-control-plane
 # Same scoped Docker access as vhsp-admin.service -- this process calls
 # the exact same provisioner.py functions (create_tenant, destroy_tenant,
 # etc.), so it needs the exact same access. See that unit's own comment
@@ -39,14 +39,14 @@ Environment=VHSP_MCP_ENABLED=1
 # for the same reason that one isn't).
 Environment=VHSP_MCP_BIND_HOST=0.0.0.0
 Environment=VHSP_MCP_BIND_PORT=8001
-ExecStart=/home/astjohn/vhsp-control-plane/.venv/bin/python3 -m vhsp_ctl.mcp_server
+ExecStart=__VHSP_HOME__/vhsp-control-plane/.venv/bin/python3 -m vhsp_ctl.mcp_server
 Restart=on-failure
 RestartSec=2
 
 # Same reasoning as vhsp-admin.service's identical setting -- this
 # process shells out to sudo for the fail2ban-log-tail wrapper script
 # (provisioner.tail_fail2ban_log, used by the get_fail2ban_log tool),
-# via the same scoped sudoers grant astjohn already has (deploy/vhsp-sudoers
+# via the same scoped sudoers grant __VHSP_USER__ already has (deploy/vhsp-sudoers
 # is keyed to specific scripts, not specific processes, so no separate
 # grant is needed for this unit).
 NoNewPrivileges=false

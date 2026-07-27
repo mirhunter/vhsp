@@ -119,7 +119,7 @@ def _run(*args: str) -> None:
 
 
 def tail_fail2ban_log(n: int) -> str:
-    """For the operator UI's /fail2ban page. astjohn can't read
+    """For the operator UI's /fail2ban page. The control-plane user can't read
     /var/log/fail2ban.log directly (not documented anywhere as
     non-root-readable, so not assumed to be) -- goes through the same
     root-owned-wrapper-script pattern as every other sudo action here,
@@ -166,7 +166,7 @@ def _harden_host_dir(host_path: str) -> None:
     The actual fstab-editing and mount(8) work happens inside
     deploy/vhsp-harden-hostdir, a root-owned script invoked via a single
     scoped sudo call -- not inline `sudo tee`/`sudo mount` calls -- so the
-    astjohn user's sudoers grant can be narrow (see the control-plane
+    control-plane user's sudoers grant can be narrow (see the control-plane
     README's "Docker socket exposure" section for why a blanket sudo
     grant on the same user running the internet-facing admin process was
     a real problem). The wrapper script is itself idempotent (checks
@@ -182,8 +182,8 @@ def _remove_host_dir(host_path: str) -> None:
 
     Full deletion (not just unmount) is deliberate: containers like
     MariaDB chown their data directory to an internal uid on startup
-    (verified: it ends up owned by uid 999 on the host, not the astjohn
-    user the control plane runs as), so a "destroy" that left the
+    (verified: it ends up owned by uid 999 on the host, not the user the
+    control plane runs as), so a "destroy" that left the
     directory behind would leave it unwritable/unchmoddable by the control
     plane on the next `mkdir`+`chmod` for that same tenant slug. Tenant
     data recovery after a destroy is what the (not yet built) backup

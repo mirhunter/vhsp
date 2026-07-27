@@ -84,13 +84,37 @@ safely wildcard the tenant-specific paths these operate on (modern
 lives in the scripts instead, which is the standard pattern for this
 situation. Install the scripts first, then the sudoers grant:
 ```
-sudo adduser --disabled-password --gecos "" astjohn
-sudo usermod -aG docker astjohn   # removed again in step 6, once the docker-socket-proxy is up
+# Pick the account name once; everything below follows from it. "vhsp" is
+# the default the templates render to, but any valid user name works --
+# an existing deployment keeps whatever it already uses.
+VHSP_USER=vhsp
+
+sudo adduser --disabled-password --gecos "" "$VHSP_USER"
+sudo usermod -aG docker "$VHSP_USER"   # removed again in step 6, once the docker-socket-proxy is up
 sudo install -o root -g root -m 0755 deploy/vhsp-harden-hostdir deploy/vhsp-remove-hostdir /usr/local/sbin/
-sudo cp deploy/vhsp-sudoers /etc/sudoers.d/astjohn
-sudo chmod 440 /etc/sudoers.d/astjohn
-sudo visudo -cf /etc/sudoers.d/astjohn   # verify before trusting it -- ALWAYS do this for sudoers.d edits
 ```
+
+The systemd units and the sudoers grant have to name a concrete user --
+systemd's `User=` takes no variables and sudoers has no indirection --
+so the committed files carry `__VHSP_USER__` / `__VHSP_HOME__`
+placeholders and `deploy/vhsp-render` stamps them out for this host:
+```
+./deploy/vhsp-render --user "$VHSP_USER"
+```
+That writes concrete copies into `deploy/rendered/` (gitignored -- never
+commit them back). **Install from `deploy/rendered/`, never from the
+templates beside it**; installing a template would give systemd a unit
+naming a user that doesn't exist, or worse, put an unparseable file in
+`/etc/sudoers.d/`, which can lock sudo out of the host entirely.
+```
+sudo cp deploy/rendered/vhsp-sudoers "/etc/sudoers.d/$VHSP_USER"
+sudo chmod 440 "/etc/sudoers.d/$VHSP_USER"
+sudo visudo -cf "/etc/sudoers.d/$VHSP_USER"   # verify before trusting it -- ALWAYS do this for sudoers.d edits
+```
+
+Re-run `./deploy/vhsp-render --user "$VHSP_USER"` after any `git pull`
+that touches `deploy/`, then reinstall whatever changed -- the rendered
+copies don't update themselves.
 If `TENANTS_DIR` isn't the default `/srv/vhsp/tenants` on this
 deployment (i.e. `VHSP_STATE_DIR` is overridden), edit the
 `TENANTS_DIR=` line in both `deploy/vhsp-harden-hostdir` and
@@ -136,7 +160,7 @@ echo "/swapfile none swap sw 0 0" | sudo tee -a /etc/fstab
 This repo isn't git-hosted -- `rsync` a local checkout over:
 ```
 rsync -az --delete --exclude '.venv' --exclude '__pycache__' --exclude '*.egg-info' \
-  ./control-plane/ astjohn@<host>:/home/astjohn/vhsp-control-plane/
+  ./control-plane/ "$VHSP_USER@<host>:/home/$VHSP_USER/vhsp-control-plane/"
 ```
 Then, on the host:
 ```
@@ -404,9 +428,9 @@ sudo install -o root -g root -m 0755 deploy/vhsp-fail2ban-tenant-jail /usr/local
 # VHSP_FAIL2BAN_TENANT Cmnd_Alias) -- same visudo -cf discipline as
 # every other sudoers change in this file, never edit the live file
 # directly:
-sudo cp deploy/vhsp-sudoers /etc/sudoers.d/astjohn.new
-sudo visudo -cf /etc/sudoers.d/astjohn.new
-sudo mv /etc/sudoers.d/astjohn.new /etc/sudoers.d/astjohn
+sudo cp deploy/rendered/vhsp-sudoers "/etc/sudoers.d/$VHSP_USER.new"
+sudo visudo -cf "/etc/sudoers.d/$VHSP_USER.new"
+sudo mv "/etc/sudoers.d/$VHSP_USER.new" "/etc/sudoers.d/$VHSP_USER"
 ```
 Any tenants that existed before this rolled out won't have a jail
 until backfilled once, manually:
@@ -486,9 +510,9 @@ feature (`smoketest.vhsp2.dvce.us`, `testing.bigchimp.org`) -- these
 steps are for any *future* tenant found without a `waf_container` (e.g.
 one restored from an old backup). Per tenant, in this exact order:
 ```
-sudo -u astjohn env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 \
+sudo -u "$VHSP_USER" env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 \
   .venv/bin/python3 recreate_waf.py <domain>
-sudo -u astjohn env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 \
+sudo -u "$VHSP_USER" env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 \
   .venv/bin/python3 recreate_web.py <domain>
 ```
 `recreate_web.py` now refuses to run at all for a tenant with no live
@@ -505,7 +529,7 @@ docker logs <tenant>-waf 2>&1 | tail -20                      # confirms a real 
 To test blocking mode against one tenant only, without touching the
 platform-wide default:
 ```
-sudo -u astjohn env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 VHSP_WAF_ENGINE_MODE=On \
+sudo -u "$VHSP_USER" env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 VHSP_WAF_ENGINE_MODE=On \
   .venv/bin/python3 recreate_waf.py <domain>
 ```
 then repeat the same SQLi curl and confirm a real `403`, and confirm a
@@ -525,7 +549,7 @@ page) need two things this codebase never needed before:
    Verify before trusting it -- this is the first time this codebase
    has ever called the Docker logs endpoint through the proxy:
    ```
-   sudo -u astjohn env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 .venv/bin/python3 -c \
+   sudo -u "$VHSP_USER" env VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 .venv/bin/python3 -c \
      "import docker; c=docker.DockerClient(base_url='tcp://127.0.0.1:2375'); \
       print(len(c.containers.get('vhsp-<any-live-tenant-slug>-waf').logs(tail=5)))"
    ```
@@ -536,11 +560,11 @@ page) need two things this codebase never needed before:
    `VHSP_FAIL2BAN_LOG` `Cmnd_Alias`:
    ```
    sudo install -o root -g root -m 0755 deploy/vhsp-fail2ban-log-tail /usr/local/sbin/
-   sudo cp deploy/vhsp-sudoers /etc/sudoers.d/astjohn.new
-   sudo visudo -cf /etc/sudoers.d/astjohn.new
-   sudo mv /etc/sudoers.d/astjohn.new /etc/sudoers.d/astjohn
+   sudo cp deploy/rendered/vhsp-sudoers "/etc/sudoers.d/$VHSP_USER.new"
+   sudo visudo -cf "/etc/sudoers.d/$VHSP_USER.new"
+   sudo mv "/etc/sudoers.d/$VHSP_USER.new" "/etc/sudoers.d/$VHSP_USER"
    ```
-   Verify: `sudo -u astjohn sudo -n /usr/local/sbin/vhsp-fail2ban-log-tail 5`
+   Verify: `sudo -u "$VHSP_USER" sudo -n /usr/local/sbin/vhsp-fail2ban-log-tail 5`
    returns real recent fail2ban.log lines.
 
 ## 11. Operator API + MCP (optional, opt-in)
@@ -566,7 +590,7 @@ even though the backend call actually finishes. This affects the web
 UI's own "New tenant" form too, not just the API, so it's worth doing
 even on a deployment that skips the rest of this section:
 ```
-ExecStart=/bin/sh -c 'exec /home/astjohn/vhsp-control-plane/.venv/bin/gunicorn --workers 2 --timeout 180 --bind ${VHSP_ADMIN_BIND_HOST}:${VHSP_ADMIN_BIND_PORT} vhsp_ctl.web:app'
+ExecStart=/bin/sh -c 'exec /home/<VHSP_USER>/vhsp-control-plane/.venv/bin/gunicorn --workers 2 --timeout 180 --bind ${VHSP_ADMIN_BIND_HOST}:${VHSP_ADMIN_BIND_PORT} vhsp_ctl.web:app'
 ```
 (already the default in `deploy/vhsp-admin.service` as of this repo's
 current version -- if upgrading an older install, re-copy the unit file
@@ -594,11 +618,11 @@ in place first:
    pattern):
    ```
    sudo install -o root -g root -m 0755 deploy/vhsp-mcp-toggle deploy/vhsp-mcp-firewall /usr/local/sbin/
-   sudo cp deploy/vhsp-sudoers /etc/sudoers.d/astjohn.new
-   sudo visudo -cf /etc/sudoers.d/astjohn.new
-   sudo mv /etc/sudoers.d/astjohn.new /etc/sudoers.d/astjohn
+   sudo cp deploy/rendered/vhsp-sudoers "/etc/sudoers.d/$VHSP_USER.new"
+   sudo visudo -cf "/etc/sudoers.d/$VHSP_USER.new"
+   sudo mv "/etc/sudoers.d/$VHSP_USER.new" "/etc/sudoers.d/$VHSP_USER"
    ```
-   Verify before trusting it: `sudo -u astjohn sudo -n /usr/local/sbin/vhsp-mcp-toggle`
+   Verify before trusting it: `sudo -u "$VHSP_USER" sudo -n /usr/local/sbin/vhsp-mcp-toggle`
    should print that script's own usage error (proving sudo let the call
    through), not a password prompt or permission denial.
 

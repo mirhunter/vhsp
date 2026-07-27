@@ -66,7 +66,7 @@ fi
 # -- including the bind-mounted volume root itself, not just the
 # immediate parent -- is owned by a uid that's neither its own nor root's
 # (verified directly: "is writeable and owned by uid 1000 ... not the
-# executing uid (100) or the superuser", uid 1000 being astjohn, the host
+# executing uid (100) or the superuser", uid 1000 being the control-plane user, the host
 # process that originally created the volume's host directory). Recurse
 # from the mount root, not just $DKIM_DIR, to cover the whole chain.
 chown -R opendkim:opendkim /etc/opendkim/keys

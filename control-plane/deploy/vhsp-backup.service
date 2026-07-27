@@ -5,9 +5,9 @@ Wants=network-online.target vhsp-docker-proxy.service
 
 [Service]
 Type=oneshot
-User=astjohn
-Group=astjohn
-WorkingDirectory=/home/astjohn/vhsp-control-plane
+User=__VHSP_USER__
+Group=__VHSP_USER__
+WorkingDirectory=__VHSP_HOME__/vhsp-control-plane
 # Talks to Docker through vhsp-docker-proxy.service's scoped API, not the
 # raw socket -- see vhsp-admin.service's own comment and the control-plane
 # README's "Docker socket exposure" section for the full reasoning.
@@ -22,7 +22,7 @@ Environment=VHSP_BACKUP_SFTP_HOST=
 Environment=VHSP_BACKUP_SFTP_PORT=22
 Environment=VHSP_BACKUP_SFTP_USER=
 Environment=VHSP_BACKUP_SFTP_PATH=/backup
-ExecStart=/home/astjohn/vhsp-control-plane/.venv/bin/vhsp backup run-all
+ExecStart=__VHSP_HOME__/vhsp-control-plane/.venv/bin/vhsp backup run-all
 
 # The control plane's provisioner/backup modules shell out to sudo for
 # mount hardening and privileged directory cleanup during restore -- same

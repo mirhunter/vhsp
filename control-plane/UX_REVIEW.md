@@ -10,7 +10,7 @@ feature-coverage cross-check against every function/command in
 (see `SECURITY_REVIEW_2.md` for that; its format is mirrored here). No
 infrastructure was touched -- read-only source review plus read-only
 Flask-test-client renders against the live vhsp2 deployment
-(`astjohn@vhsp2.dvce.us`, both the operator process and the
+(`the control-plane user@vhsp2.dvce.us`, both the operator process and the
 `vhsp-testing-bigchimp-org-tenant-admin` / `vhsp-smoketest-vhsp2-dvce-us-tenant-admin`
 containers), used to confirm several findings against real rendered HTML
 rather than template source alone.

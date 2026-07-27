@@ -1,4 +1,4 @@
-# Scoped sudo grant for the vhsp control-plane user (astjohn by default).
+# Scoped sudo grant for the vhsp control-plane user (__VHSP_USER__ by default).
 #
 # Replaces a blanket `ALL=(ALL) NOPASSWD:ALL` grant (DEPLOYMENT.md's old
 # one-liner) with sudo access to exactly five root-owned wrapper scripts --
@@ -23,8 +23,8 @@
 # which is fine here because the scripts are what's actually trusted
 # with root, not this file.
 #
-# Install as /etc/sudoers.d/astjohn (mode 440), replacing the old file,
-# and ALWAYS verify with `sudo visudo -cf /etc/sudoers.d/astjohn` before
+# Install as /etc/sudoers.d/__VHSP_USER__ (mode 440), replacing the old file,
+# and ALWAYS verify with `sudo visudo -cf /etc/sudoers.d/__VHSP_USER__` before
 # trusting it -- a syntax error in a sudoers.d file can lock out sudo
 # entirely. Install the two scripts themselves to /usr/local/sbin first
 # (root:root, 0755) -- see DEPLOYMENT.md.
@@ -75,4 +75,4 @@ Cmnd_Alias VHSP_FAIL2BAN_LOG = /usr/local/sbin/vhsp-fail2ban-log-tail
 Cmnd_Alias VHSP_MCP_TOGGLE = /usr/local/sbin/vhsp-mcp-toggle
 Cmnd_Alias VHSP_MCP_FIREWALL = /usr/local/sbin/vhsp-mcp-firewall
 
-astjohn ALL=(root) NOPASSWD: VHSP_HOSTDIR, VHSP_RESTART, VHSP_BACKUP, VHSP_FAIL2BAN_TENANT, VHSP_FAIL2BAN_LOG, VHSP_MCP_TOGGLE, VHSP_MCP_FIREWALL
+__VHSP_USER__ ALL=(root) NOPASSWD: VHSP_HOSTDIR, VHSP_RESTART, VHSP_BACKUP, VHSP_FAIL2BAN_TENANT, VHSP_FAIL2BAN_LOG, VHSP_MCP_TOGGLE, VHSP_MCP_FIREWALL
