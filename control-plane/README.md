@@ -1183,6 +1183,38 @@ Docker API on `127.0.0.1:2375`, loopback-only:
   API compromise become a secrets-manager compromise too, even before
   that manager exists).
 
+**What this does and does not buy — stated plainly, because it's easy to
+read more into it than is there.** The denied list above is real: those
+API sections are genuinely unreachable through the proxy. But the
+*allowed* set is not a reduction in privilege level. `CONTAINERS` +
+`POST` + `EXEC` + `IMAGES` + `VOLUMES` together are sufficient to start
+a container with a host bind mount and exec inside it, which is root on
+the host. **Anything that can reach `127.0.0.1:2375` is
+root-equivalent.** That's accepted rather than overlooked — those are
+precisely the calls `provisioner.py` needs to do its job, and a
+provisioning control plane that can't create containers isn't one.
+
+The consequence worth carrying forward is about the *other* control:
+the sudo scoping described below is a genuine defence-in-depth layer,
+but it is **not** a containment boundary by itself, because the same
+compromised process it refuses a root shell to can reach this proxy
+instead and get there anyway. Both controls raise the cost of a
+compromise and neither one closes the path alone. Actually narrowing
+this would mean brokering the specific container operations behind
+wrapper scripts, the way the sudo wrappers already broker
+mount/fstab/tar — a design change, not a config toggle. Nothing in the
+current threat model justifies that yet; it's recorded here so the
+question is re-asked deliberately rather than assumed closed.
+
+The proxy image is **pinned by digest**, not `:latest` — for the one
+container mediating all root-equivalent access, "whatever the registry
+serves today" is a supply-chain gap the rest of this stack doesn't have.
+The pinned digest is the image vhsp2 was already running when the pin
+was introduced (verified against its `RepoDigests`), so adopting it is a
+no-op rather than a silent upgrade. It is deliberately *not* the current
+`:latest`, which had already moved on — that drift, discovered while
+adding the pin, is exactly what the pin exists to stop.
+
 `vhsp_ctl.config.DOCKER_HOST_URL` (read from `VHSP_DOCKER_HOST`,
 defaulting to the raw socket for local dev where no proxy is running)
 is the single place this is wired in. `provisioner._client()` is the

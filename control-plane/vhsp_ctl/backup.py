@@ -913,6 +913,35 @@ def list_remote_snapshots_detailed(
     return rows
 
 
+def validate_snapshot_name(snapshot_name: str) -> str:
+    """A snapshot name is a bare filename and nothing else -- never a path.
+
+    Load-bearing, not hygiene. This value is joined onto a local working
+    directory before being handed to scp, and two pathlib behaviours make
+    an unvalidated name an arbitrary-file-write primitive: an absolute
+    operand REPLACES the base entirely (`Path('/srv/.../work') /
+    '/home/astjohn/.ssh/authorized_keys'` is that second path, not a
+    concatenation), and `..` segments traverse normally. The name is also
+    interpolated into the *remote* path, so a caller who controls the
+    remote (a tenant restoring from their own configured destination --
+    see process_requests) controls the bytes that would land there.
+
+    Enforced here rather than only at the callers for the same reason
+    deploy/vhsp-backup-tar re-validates arguments its Python caller
+    already checked: this is the function that turns the value into a
+    filesystem operation, so this is the trust boundary. The manifest
+    signature check further down cannot stand in for it -- that runs
+    after the fetch has already written to disk.
+
+    `Path(name).name` collapses any directory component to its last
+    element, so comparing against it rejects traversal and absolute
+    paths in one comparison rather than blocklisting separators.
+    """
+    if not snapshot_name or snapshot_name != Path(snapshot_name).name or snapshot_name in (".", ".."):
+        raise BackupError(f"invalid snapshot name: {snapshot_name!r}")
+    return snapshot_name
+
+
 def _fetch_and_verify(
     domain: str, snapshot_name: str, source: str, tenant: registry.Tenant | None, workdir: Path,
 ) -> tuple[dict, Path]:
@@ -920,7 +949,13 @@ def _fetch_and_verify(
     name ends .age, extract, verify signature (hard fail, no bypass flag
     exists in this function's own signature on purpose). Returns
     (manifest_dict, extract_dir)."""
+    validate_snapshot_name(snapshot_name)
     fetched = workdir / snapshot_name
+    # Belt-and-braces against any future edit weakening the check above --
+    # same resolve-then-check-containment shape images/tenant-admin/'s
+    # _safe_webroot_path already uses for its own tenant-supplied paths.
+    if fetched.resolve().parent != workdir.resolve():
+        raise BackupError(f"invalid snapshot name: {snapshot_name!r}")
     with _dest_identity(source, tenant) as (host, port, user, key):
         base = BACKUP_OPERATOR_SFTP_PATH if source == "operator" else (tenant.backup_dest_path or "/backup")
         remote_path = f"{base.rstrip('/')}/{domain}/{snapshot_name}"
@@ -1291,16 +1326,32 @@ def process_requests(actor: str = "reconciler") -> None:
                     age_first_reveal = key_text
 
             if req.get("action") == "restore_requested" and req.get("restore_snapshot"):
+                # Checked here as well as inside _fetch_and_verify, because
+                # this is the one call site fed by genuinely untrusted input:
+                # backup_request.json is written by the tenant's own admin
+                # container from a form field. A name that fails validation
+                # isn't a user mistake -- the panel only ever submits names it
+                # listed itself -- so it gets its own audit entry rather than
+                # being swallowed by the broad except below, which exists for
+                # transient docker/SSH failures and would otherwise bury the
+                # single clearest signal of someone probing this path.
+                try:
+                    validate_snapshot_name(req["restore_snapshot"])
+                    name_ok = True
+                except BackupError:
+                    audit.log_action("backup.restore_rejected", tenant.domain, actor)
+                    name_ok = False
                 # Broad except, not just BackupError: a raw docker/SSH
                 # exception here must not propagate either -- this loop
                 # covers every tenant, same "one tenant's failure can't take
                 # the whole pass down" resilience run_all_due_backups needs
                 # (see its own comment for the concrete failure that was
                 # actually observed escaping a narrower except here).
-                try:
-                    restore_backup(tenant.domain, req["restore_snapshot"], source="tenant", actor=actor)
-                except Exception:
-                    pass  # not surfaced anywhere yet -- self-service restore failures are a known UI gap
+                if name_ok:
+                    try:
+                        restore_backup(tenant.domain, req["restore_snapshot"], source="tenant", actor=actor)
+                    except Exception:
+                        pass  # not surfaced anywhere yet -- self-service restore failures are a known UI gap
                 remaining = {k: v for k, v in req.items() if k not in ("action", "restore_snapshot")}
                 req_file.write_text(json.dumps(remaining))
 
