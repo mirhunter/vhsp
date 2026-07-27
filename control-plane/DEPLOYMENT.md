@@ -45,10 +45,26 @@ this topology.
 
 **OS packages** (apt-based; adjust for other distros):
 ```
-sudo apt-get install -y age ufw ca-certificates curl rsync python3-venv python3-pip
+sudo apt-get install -y age bind9-dnsutils ufw ca-certificates curl rsync python3-venv python3-pip
 ```
 `age`/`age-keygen` are for the backup feature's encryption keys, not
 optional if backups will ever be configured.
+
+`bind9-dnsutils` provides `dig`, which `vhsp_ctl/dns_records.py` shells
+out to for the operator UI's "Check records" button and the tenant
+panel's DNS page. Worth installing explicitly even though it often
+arrives as some other package's dependency: when `dig` is absent the
+lookup raises `FileNotFoundError`, which is caught and logged as a
+warning and reported as **"not live"** — so every DNS record shows as
+misconfigured even when it's correct, and the only clue is a line in the
+service log. It was present on the reference deployment by transitive
+luck rather than by this list, which is exactly why it's now named here.
+
+`openssl` and `openssh-client` (`ssh`/`scp`/`ssh-keygen`) are also
+required — for mailbox password hashing and for the off-host backup
+transport respectively — but ship on essentially every Ubuntu/Debian
+base image, so they're not in the install line above. Verify with
+`command -v openssl ssh-keygen` if a fresh host behaves unexpectedly.
 
 **Docker Engine** -- install from Docker's own apt repo, not the distro's
 bundled package (too old/missing compose plugin). If the host's release
