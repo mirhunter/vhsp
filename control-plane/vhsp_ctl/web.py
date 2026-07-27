@@ -2922,10 +2922,21 @@ CERT_STATUS_TABLE = """
     on first visit. If the A record above wasn't already pointing here at that
     moment, the request failed and <strong>will not retry on its own</strong> --
     reloading the site does not retrigger it, and neither does restarting the
-    tenant's containers. Fixing the DNS is necessary but not sufficient.
-    Recovering a tenant in this state currently needs a Traefik restart, which
-    briefly interrupts TLS for every tenant on this host; see issue #18.
+    tenant's containers.
   </p>
+  <p class="muted" style="margin:0.5rem 0 0">
+    Get the A records above showing <strong>live</strong> first, then use this.
+    It recreates the containers carrying this tenant's routes, which is what
+    makes Traefik ask again &mdash; and it <strong>briefly takes this tenant's
+    site down</strong> while they come back. It won't run while DNS still
+    points elsewhere, because a failed attempt spends one of the five
+    validations Let's Encrypt allows per hostname per hour.
+  </p>
+  <form method="post" action="{{ url_for('tenant_reissue_cert', domain=t.domain) }}"
+        style="margin-top:0.75rem"
+        onsubmit="return confirm('Reissue certificates for ' + '{{ t.domain }}' + '? This briefly takes their site down.');">
+    <button type="submit">Reissue certificates{% if not has_2fa %} (2FA required){% endif %}</button>
+  </form>
   {% endif %}
 </div>
 {% endif %}
@@ -2974,6 +2985,28 @@ DNS_RECORDS_TABLE = """
 first start, which can take a few seconds after this tenant was created.</div>
 {% endif %}
 """
+
+
+@app.route("/tenants/<domain>/reissue-cert", methods=["POST"])
+@require_auth
+# Recreates containers, so it's destructive-adjacent: brief downtime for the
+# tenant, and it spends a rate-limited Let's Encrypt validation. Same gate as
+# the other actions that reach into a tenant's running infrastructure.
+@require_2fa
+def tenant_reissue_cert(domain):
+    t, err = get_tenant_or_404(domain)
+    if err:
+        return err
+    try:
+        result = provisioner.reissue_tenant_certificates(
+            domain, actor=f"admin-ui:{session['username']}")
+    except provisioner.CertReissueError as e:
+        flash(str(e), "error")
+        return redirect(url_for("tenant_dns", domain=domain))
+    flash(
+        f"Reissue requested for {', '.join(result['hostnames'])}. Traefik orders "
+        "asynchronously -- re-check this page in about 30 seconds.", "ok")
+    return redirect(url_for("tenant_dns", domain=domain))
 
 
 @app.route("/tenants/<domain>/dns", methods=["GET"])

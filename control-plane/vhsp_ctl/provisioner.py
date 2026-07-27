@@ -2368,3 +2368,103 @@ def disable_mcp_server(actor: str = "cli") -> None:
     _MCP_TRAEFIK_ROUTE_PATH.unlink(missing_ok=True)
 
     audit.log_action("admin.mcp_service_disable", "", actor)
+
+
+class CertReissueError(ProvisioningError):
+    """Distinct from a generic ProvisioningError so callers can tell
+    "you asked at the wrong time" (DNS not ready) from "the recreate
+    itself broke", and word the two differently."""
+
+
+def reissue_tenant_certificates(domain: str, actor: str = "cli") -> dict:
+    """Make Traefik ask Let's Encrypt again for this tenant's certificates.
+
+    Exists because a failed certificate order never retries on its own.
+    Traefik resolves a router's certificate when it *discovers the
+    router*, so an order placed while the tenant's DNS still pointed
+    elsewhere fails and then nothing happens -- not on later HTTPS
+    requests, not after the tenant's containers restart. Measured on a
+    real host: five failed orders in sixteen seconds at creation, then no
+    further attempt for an hour, across repeated HTTPS handshakes once
+    DNS was correct and across a `docker restart` of the container
+    carrying the router. See issue #18.
+
+    What does work is replacing the container. A restart keeps the same
+    container, so the Docker provider reports the same router with
+    identical labels and Traefik has no reason to re-resolve; a remove +
+    create produces a new container and therefore a genuine provider
+    event, and Traefik requests the certificate as it registers the
+    router. Verified as the *only* difference between the two: attempts
+    held flat at 4 across idle and across restart, and went to 5
+    immediately on recreate.
+
+    So this recreates the containers carrying the tenant's own HTTP
+    routers -- the WAF sidecar (Host(<domain>)) and the tenant-admin
+    container (Host(admin.<domain>)). Those are exactly the two hostnames
+    dns_records.cert_status() reports on, so what this fixes and what the
+    UI shows stay in step.
+
+    `webmail.<domain>` is deliberately NOT covered. Its router lives on
+    the shared Roundcube container, so reissuing it would recreate a
+    container every other tenant is also served by -- a per-tenant action
+    with cross-tenant blast radius, which needs its own decision rather
+    than being smuggled in here.
+
+    Refuses unless DNS already resolves to this host. That isn't
+    politeness: Let's Encrypt allows five failed validations per hostname
+    per hour, so retrying blindly against DNS that is still wrong spends
+    a limited budget to achieve nothing, and can lock out the retry that
+    *would* have worked once DNS caught up.
+
+    Brief downtime is unavoidable -- recreating the WAF container drops
+    the tenant's site for a moment. That is worth stating in any UI that
+    calls this, since the tenant is usually already serving a browser
+    warning and the operator is choosing between two visible faults.
+    """
+    tenant = registry.get_tenant(domain)
+    if not tenant:
+        raise CertReissueError(f"no active tenant for domain {domain!r}")
+    if not dns_records.PLATFORM_PUBLIC_IP:
+        raise CertReissueError(
+            "VHSP_PLATFORM_PUBLIC_IP is not set, so there is nothing to check DNS against -- "
+            "set it on vhsp-admin.service before using this"
+        )
+
+    admin_hostname = f"admin.{domain}"
+    not_live = [
+        host for host in (domain, admin_hostname)
+        if not dns_records.is_record_live("A", host, dns_records.PLATFORM_PUBLIC_IP)
+    ]
+    if not_live:
+        raise CertReissueError(
+            f"DNS for {', '.join(not_live)} does not resolve to {dns_records.PLATFORM_PUBLIC_IP} yet. "
+            "Fix the A record(s) first -- reissuing now would only burn one of the five "
+            "failed validations Let's Encrypt allows per hostname per hour."
+        )
+
+    client = _client()
+    recreated = []
+
+    if tenant.waf_container:
+        try:
+            client.containers.get(tenant.waf_container).remove(force=True)
+        except NotFound:
+            pass
+        name = _create_waf_container(client, tenant.slug, tenant.domain, tenant.phpconf_host_path)
+        registry.set_tenant_waf_container(domain, name)
+        recreated.append(domain)
+
+    try:
+        client.containers.get(tenant.tenant_admin_container).remove(force=True)
+    except NotFound:
+        pass
+    _create_tenant_admin_container(
+        client, tenant.slug, tenant.domain, tenant.phpconf_volume, tenant.phpconf_host_path,
+        tenant.logs_volume, tenant.webroot_volume, tenant.db_network, tenant.db_container,
+        tenant.db_name, tenant.db_user, tenant.db_password, tenant.mail_volume,
+        tenant.ssh_port, tenant.sftp_user,
+    )
+    recreated.append(admin_hostname)
+
+    audit.log_action("tenant.cert_reissue", domain, actor)
+    return {"domain": domain, "hostnames": recreated}
