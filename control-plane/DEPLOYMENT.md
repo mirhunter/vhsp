@@ -208,6 +208,20 @@ mail's admin router, tenant-admin's public router) -- so make **`web`
 itself the TLS-terminating entrypoint on `:443`**, with a *separate*
 entrypoint used only for the ACME HTTP-01 challenge on `:80`.
 
+Since no tenant router is ever bound to `acme-http` (every label in
+`provisioner.py` targets `web` only), a plain `http://` request to a
+tenant domain has no router to match on `:80` and Traefik answers with
+its bare 404 -- there's nothing forwarding it to `:443`. The
+`entrypoints.acme-http.http.redirections.entryPoint.*` options below
+fix that with a global redirect on the entrypoint itself (`:80` →
+`https://` on `web`), which doesn't need a per-tenant router/middleware
+label and doesn't interfere with the HTTP-01 challenge -- Traefik
+serves `/.well-known/acme-challenge/...` on that entrypoint ahead of
+the redirect regardless. A host already deployed from an earlier
+version of this guide needs these two lines added to its running
+`~/traefik/docker-compose.yml` by hand, then `docker compose up -d`
+to apply.
+
 `~/traefik/docker-compose.yml`:
 ```yaml
 services:
@@ -226,6 +240,8 @@ services:
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
       - --entrypoints.acme-http.address=:80
+      - --entrypoints.acme-http.http.redirections.entryPoint.to=web
+      - --entrypoints.acme-http.http.redirections.entryPoint.scheme=https
       - --entrypoints.web.address=:443
       - --entrypoints.web.http.tls=true
       - --entrypoints.web.http.tls.certresolver=letsencrypt
