@@ -1,6 +1,6 @@
 # vhsp Security Review 2 -- Follow-up (2026-07-24)
 
-Scope: read-only review of the local repo at `/home/astjohn/Projects/vhsp`
+Scope: read-only review of the local repo at `/home/the control-plane user/Projects/vhsp`
 (`architecture.md`, `control-plane/`). This is a follow-up to a prior
 review whose 10 findings were all remediated and verified against live
 infra. This pass (a) sanity-checks those fixes for regression, and (b)
@@ -57,7 +57,7 @@ None found. Specifically re-verified against current code:
   pre-existing two.
 - `deploy/vhsp-docker-proxy.service`: still a `tecnativa/docker-socket-proxy`
   allowlist with `SWARM/SERVICES/SECRETS/CONFIGS/PLUGINS/NODES/BUILD/
-  COMMIT/DISTRIBUTION/AUTH/TASKS/SESSION/SYSTEM` all `=0`; astjohn's
+  COMMIT/DISTRIBUTION/AUTH/TASKS/SESSION/SYSTEM` all `=0`; the control-plane user's
   processes only reach Docker via `127.0.0.1:2375`, not the raw socket.
 - Login throttling (`vhsp_ctl/login_throttle.py` on the operator side,
   an independently-implemented equivalent in `images/tenant-admin/app.py`
@@ -131,7 +131,7 @@ of the login form *and* every 2FA gate at once.
 
 The realistic exposure path is local: this file lives on a bind
 mount now owned by whatever OS user runs `vhsp-admin.service`
-(`astjohn`, per the Focus-Area-2 fix), permissions `644`. Any other
+(the control-plane user, per the Focus-Area-2 fix), permissions `644`. Any other
 local account on the host, any process that gets incidental read
 access to `/srv/vhsp/tenants/*/phpconf/` (a misconfigured backup
 step, a future bug, a support script run by hand), or a host-level
@@ -292,7 +292,7 @@ touching this file will design around a constraint -- "must stay
   documented pattern as `VHSP_HOSTDIR`/`VHSP_BACKUP`).
   `vhsp-fail2ban-allowlist-check` correctly does *not* appear in
   sudoers at all, since it's invoked by fail2ban's own root-owned
-  service directly, not via astjohn's sudo grant.
+  service directly, not via the control-plane user's sudo grant.
 - **chown target in the tenant-admin UID fix:** `_chown_to_host(path:
   Path)` is called at exactly four call sites, all hardcoded
   module-level `Path` constants (`WEBAUTHN_CREDENTIALS_FILE`,

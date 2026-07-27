@@ -37,7 +37,7 @@ GATEWAY_NETWORK = os.environ.get("VHSP_GATEWAY_NETWORK", "traefik")
 # provisioner.enable_mcp_server()/disable_mcp_server() are the first code
 # in this repo to write here programmatically, for the operator UI's MCP
 # toggle. Defaults relative to the running process's own home directory
-# (astjohn's, for vhsp-admin.service) rather than a hardcoded path, since
+# (the control-plane user's, for vhsp-admin.service) rather than a hardcoded path, since
 # that's genuinely portable across deployments unlike e.g.
 # deploy/vhsp-mcp-toggle's own hardcoded checkout path.
 TRAEFIK_DYNAMIC_DIR = Path(os.environ.get("VHSP_TRAEFIK_DYNAMIC_DIR", str(Path.home() / "traefik" / "dynamic")))

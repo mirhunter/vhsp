@@ -12,3 +12,7 @@ node_modules/
 
 # Local Claude Code settings
 .claude/settings.local.json
+
+# Host-specific rendered deploy artifacts (see deploy/vhsp-render).
+# Never commit these -- they carry one deployment's real username/paths.
+control-plane/deploy/rendered/

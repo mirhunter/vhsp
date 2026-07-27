@@ -5,7 +5,7 @@
 # ignorecommand contract. Exit non-zero = proceed with the normal ban.
 #
 # Runs as fail2ban's own systemd service, which is already root -- this
-# script does NOT go through astjohn's scoped sudoers grant at all,
+# script does NOT go through __VHSP_USER__'s scoped sudoers grant at all,
 # unlike every other wrapper script in this directory.
 #
 # Args: <ip> [tenant-slug]. Always checks the platform-wide operator

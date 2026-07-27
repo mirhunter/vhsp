@@ -213,7 +213,7 @@ outer Traefik's own address (still wrong, just a different wrong value):
    subnet it's reachable from, so it forwards through the `X-Forwarded-For`
    chain it already computed correctly instead of discarding it. On this
    deployment that's `--entrypoints.web.forwardedHeaders.trustedIPs=172.16.45.0/24`
-   in `/home/astjohn/traefik/docker-compose.yml` on the VM (outside this
+   in `~/traefik/docker-compose.yml` (the control-plane user's home) on the VM (outside this
    repo -- that file isn't managed by the control plane).
 2. Set `VHSP_WEB_TRUSTED_PROXY_CIDRS` (comma-separated CIDRs) before
    provisioning/recreating tenant web containers, so their nginx also
@@ -611,8 +611,8 @@ somehow starts without those two env vars set, rather than raising.
 **Verified on vhsp2**: rebuilt `vhsp-tenant-admin:latest`, recreated
 both live tenants' containers, confirmed the new env vars actually
 landed (`docker inspect` showing `VHSP_HOST_UID=1000`/`VHSP_HOST_GID=1000`,
-astjohn's real host UID/GID). Manually `chown`'d the pre-existing
-root-owned files on both tenants back to astjohn (the code fix only
+the control-plane user's real host UID/GID). Manually `chown`'d the pre-existing
+root-owned files on both tenants back to the control-plane user (the code fix only
 takes effect on the *next* write; it doesn't retroactively fix files
 written before it shipped). Confirmed `provisioner.
 count_tenant_webauthn_keys("smoketest.vhsp2.dvce.us")` -- the exact
@@ -682,10 +682,10 @@ just inspect `session[...]`, none re-verify a live credential. Fixed:
 added the missing `os.chmod` + `_chown_to_host` call, same treatment as
 the other four sensitive files this container writes. Confirmed live on
 vhsp2 both tenants' `flask_secret_key` were genuinely `644 root`/`644
-astjohn` beforehand (the code fix alone doesn't retroactively fix a
+the control-plane user` beforehand (the code fix alone doesn't retroactively fix a
 file already on disk -- had to `chmod`/`chown` both by hand too, same
 "next write only" caveat the original webauthn ownership fix already
-documented) and are `600 astjohn` now.
+documented) and are `600` and owned by the control-plane user now.
 
 **[High] `[vhsp-tenant-admin-login]` fail2ban jail's ban blast radius.**
 Inheriting `[DEFAULT]`'s `maxretry=5`/`bantime=30m` meant 5 routine
@@ -1240,7 +1240,7 @@ covers every consumer.
 **The actual privilege boundary is group membership, not the client
 URL.** Pointing the code at the proxy accomplishes nothing on its own if
 the OS still lets the process open the raw socket directly -- so the
-`astjohn` user (which runs all three of those services, plus the CLI) is
+control-plane user (which runs all three of those services, plus the CLI) is
 removed from the host's `docker` group entirely on a hardened deployment.
 A compromised `vhsp-admin`/`vhsp-backup`/`vhsp-backup-reconcile` process
 now has no path to the raw socket at all, only whatever the proxy's
@@ -1259,13 +1259,13 @@ and this endpoint needs to leave `127.0.0.1`.
 **Human/manual Docker access**: `docker build`, `docker ps`, `docker
 logs`, and similar ad hoc commands run by hand over SSH need `sudo`
 now too, same as the mount-hardening calls already required it --
-`astjohn` isn't in the `docker` group, and the proxy doesn't expose
+that user isn't in the `docker` group, and the proxy doesn't expose
 `BUILD` at all (deliberately, since nothing in the codebase needs it).
 
 **Verified on vhsp2**: proxy installed and running, confirmed serving
 `/version`/`/containers/json` on `127.0.0.1:2375` while a denied endpoint
 (`/swarm`) returns 403 -- so the allow-list is actually enforced, not
-just configured. `astjohn` removed from the `docker` group and all three
+just configured. The control-plane user removed from the `docker` group and all three
 consuming services restarted; a real tenant create → destroy cycle
 (containers, volumes, networks, and the DKIM `exec_run` check all
 exercised) and a real `vhsp backup create` both succeeded end-to-end
@@ -1275,9 +1275,9 @@ of those processes.
 ## Sudo scoping
 
 The Docker socket proxy above closes one root-equivalent surface; the
-`astjohn` sudoers grant (`DEPLOYMENT.md`'s original `NOPASSWD:ALL`) was
+control-plane user's sudoers grant (`DEPLOYMENT.md`'s original `NOPASSWD:ALL`) was
 the other, and it quietly defeated the proxy work above -- any RCE in
-`vhsp-admin.service` (which runs as `astjohn`, internet-facing, with
+`vhsp-admin.service` (which runs as that user, internet-facing, with
 `NoNewPrivileges=false` specifically so `sudo` keeps working) was
 equivalent to root regardless of what the Docker API allow-list said.
 
@@ -1305,7 +1305,7 @@ one `/etc/fstab` line via the exact command shapes the scripts
 implement. A real, meaningful reduction in blast radius, not a complete
 elimination of it.
 
-**`astjohn` stays in the `sudo` group** (Ubuntu's default `%sudo
+**The control-plane user stays in the `sudo` group** (Ubuntu's default `%sudo
 ALL=(ALL:ALL) ALL`, password-required) for the human operator's own
 interactive system administration (`apt`, `ufw`, etc. throughout
 `DEPLOYMENT.md`) -- this is a single-operator deployment where the same
@@ -1347,7 +1347,7 @@ resolved and confirmed under `BACKUP_WORKDIR` to block `../` traversal)
 before running `tar -czf`; `deploy/vhsp-restore-clean <slug> <purpose>`
 does the `find -delete` + `chown` pair internally, using sudo's own
 `SUDO_UID`/`SUDO_GID` for the chown target rather than taking it as an
-argument. Both added to `deploy/vhsp-sudoers`'s `astjohn` grant
+argument. Both added to `deploy/vhsp-sudoers`'s grant
 alongside the existing two.
 
 **Verified on vhsp2**: a real `vhsp backup create` against a live
@@ -1636,7 +1636,7 @@ external hook) -- an operator's edit takes effect immediately, no
 JSON: the check script is bash + a small inline Python snippet (for
 real CIDR containment math via the `ipaddress` module, not hand-rolled
 bash arithmetic), not a JSON parser. This script runs as fail2ban's own
-already-root systemd service -- it does **not** go through `astjohn`'s
+already-root systemd service -- it does **not** go through the control-plane user's
 own scoped sudoers grant at all, unlike every wrapper script described
 in "Sudo scoping" above.
 
@@ -1678,7 +1678,7 @@ lockout. The operator allowlist was verified end-to-end against the
 real deployed files: wrote real entries via the same function the web
 UI calls, confirmed `vhsp-fail2ban-allowlist-check` correctly allows an
 exact-match IP, a CIDR-contained IP, and correctly refuses one outside
-either -- then cleared the test entries. `astjohn`'s own SSH access was
+either -- then cleared the test entries. the control-plane user's own SSH access was
 confirmed still working throughout every restart and test cycle.
 
 ### Operator admin-login jail
@@ -1876,7 +1876,7 @@ jail -- a real `nft` set element appeared and disappeared correctly.
 
 ### Operator log viewer: `/fail2ban`
 
-New global nav page, `astjohn` (matching every other operator page --
+New global nav page, operator-only (matching every other operator page --
 `@require_auth`, no `@require_2fa` since it's read-only with no write
 action, same shape as `/audit`). `/var/log/fail2ban.log` isn't
 documented anywhere as readable by a non-root user, so rather than
@@ -2483,7 +2483,7 @@ script here already uses (see `deploy/vhsp-harden-hostdir`'s own header
 comment for the underlying reasoning). `provisioner.enable_mcp_server()`/
 `disable_mcp_server()` call both scripts and also write/delete
 `~/traefik/dynamic/vhsp-mcp.yml` directly (a plain, unprivileged file
-write -- `astjohn` already owns that directory), discovering the
+write -- the control-plane user already owns that directory), discovering the
 Traefik gateway's real IP and subnet live via the Docker API rather than
 hardcoding them (`_traefik_gateway_info()`, same technique
 `_create_waf_container` already established). Disabling MCP reverses all
@@ -2568,7 +2568,7 @@ If the redirect-follow request happened to land in that ~1s gap, Traefik
 had no backend to proxy to. Fixed with `_restart_admin_service_deferred()`
 -- `sh -c "sleep 2 && sudo systemctl restart vhsp-admin.service"` as a
 detached child (no new sudo grant needed: the sleep runs as plain
-`astjohn`, only the already-granted `systemctl` call inside needs
+the control-plane user, only the already-granted `systemctl` call inside needs
 privilege) -- gives the redirect-follow request time to land on the
 still-alive old worker instead, showing stale toggle state for a couple
 seconds rather than a hard failure, consistent with the flash message's

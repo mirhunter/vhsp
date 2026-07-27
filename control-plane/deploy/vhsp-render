@@ -1,0 +1,99 @@
+#!/bin/bash
+# Renders this directory's deployment templates for one specific host.
+#
+# The systemd units, the sudoers grant, and two of the wrapper scripts
+# have to name a concrete OS user and home directory -- systemd's `User=`
+# takes no variables, and sudoers has no indirection either. Committing
+# one particular person's account name into those files made the repo
+# only really installable as that user, and put a maintainer's username
+# in front of anyone reading the deployment docs. So the committed files
+# carry placeholders and this script stamps them out per host.
+#
+# Placeholders (deliberately only two -- anything else that varies per
+# deployment belongs in config.py's env vars, not here):
+#   __VHSP_USER__  the OS user the control plane runs as
+#   __VHSP_HOME__  that user's home directory
+#
+# Output goes to deploy/rendered/, which is gitignored: rendered files
+# are host-specific and must never be committed back, or the next person
+# to check out this repo inherits somebody else's account name again --
+# exactly the problem this replaced.
+#
+# Idempotent: safe to re-run after pulling new templates, which is the
+# expected way to pick up template changes on an existing host.
+set -euo pipefail
+
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+out="$here/rendered"
+
+user="vhsp"
+home=""
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --user) user="${2:?--user needs a value}"; shift 2 ;;
+    --home) home="${2:?--home needs a value}"; shift 2 ;;
+    -h|--help)
+      cat <<USAGE
+usage: vhsp-render [--user NAME] [--home DIR]
+
+  --user NAME   OS user the control plane runs as (default: vhsp)
+  --home DIR    that user's home directory (default: the user's real
+                home from /etc/passwd, else /home/NAME)
+
+Writes rendered copies into deploy/rendered/. Install from there, not
+from the templates beside it. See DEPLOYMENT.md.
+USAGE
+      exit 0 ;;
+    *) echo "unknown argument: $1" >&2; exit 1 ;;
+  esac
+done
+
+# Anchored to the same character set useradd itself accepts. This value
+# lands in a sudoers grant, so a name carrying whitespace or a comma
+# would change that file's meaning rather than just looking odd.
+[[ "$user" =~ ^[a-z_][a-z0-9_-]*$ ]] || { echo "invalid user name: $user" >&2; exit 1; }
+
+# Prefer the account's real home over guessing /home/NAME -- a service
+# account created with --system or -d lands somewhere else entirely, and
+# a wrong WorkingDirectory fails at unit start with a confusing error.
+if [[ -z "$home" ]]; then
+  home="$(getent passwd "$user" | cut -d: -f6 || true)"
+  [[ -n "$home" ]] || home="/home/$user"
+fi
+[[ "$home" = /* ]] || { echo "home must be an absolute path: $home" >&2; exit 1; }
+
+mkdir -p "$out"
+
+shopt -s nullglob
+rendered=0
+for src in "$here"/*.service "$here"/*.timer "$here"/vhsp-sudoers \
+           "$here"/vhsp-mcp-toggle "$here"/vhsp-mcp-firewall \
+           "$here"/vhsp-fail2ban-log-tail "$here"/vhsp-fail2ban-allowlist-check \
+           "$here"/vhsp-harden-hostdir "$here"/vhsp-remove-hostdir \
+           "$here"/vhsp-backup-tar "$here"/vhsp-restore-clean \
+           "$here"/vhsp-fail2ban-tenant-jail; do
+  name="$(basename "$src")"
+  dest="$out/$name"
+  sed -e "s|__VHSP_USER__|$user|g" -e "s|__VHSP_HOME__|$home|g" "$src" > "$dest"
+  # Preserve executability: the wrapper scripts are installed 0755 and a
+  # rendered copy that lost the bit fails only later, at sudo time.
+  [[ -x "$src" ]] && chmod +x "$dest"
+  rendered=$((rendered + 1))
+done
+
+# A placeholder surviving into rendered output means a template grew a
+# new one this script doesn't know about. Failing here is much cheaper
+# than installing a unit systemd refuses to start, or -- worse -- a
+# sudoers file that won't parse, which can lock sudo out entirely.
+if grep -l '__VHSP_[A-Z_]*__' "$out"/* 2>/dev/null; then
+  echo "ERROR: unrendered placeholders remain in the files above" >&2
+  exit 1
+fi
+
+echo "rendered $rendered file(s) into $out"
+echo "  user: $user"
+echo "  home: $home"
+echo
+echo "Install from $out/, not from the templates in $here/."
+echo "Always run: sudo visudo -cf <the rendered vhsp-sudoers> before trusting it."

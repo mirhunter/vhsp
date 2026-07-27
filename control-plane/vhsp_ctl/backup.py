@@ -470,7 +470,7 @@ def _tar_directory(src_dir: Path, dest_file: Path) -> None:
 
     Goes through deploy/vhsp-backup-tar, a root-owned wrapper script that
     validates its own arguments, rather than a raw `sudo tar` call -- the
-    astjohn user's sudoers grant is scoped (see the control-plane
+    control-plane user's sudoers grant is scoped (see the control-plane
     README's "Sudo scoping" section), and can't safely wildcard an
     arbitrary tenant directory into a Cmnd_Alias directly (modern sudo
     refuses wildcards in command arguments). _split_tenant_host_path
@@ -920,7 +920,7 @@ def validate_snapshot_name(snapshot_name: str) -> str:
     directory before being handed to scp, and two pathlib behaviours make
     an unvalidated name an arbitrary-file-write primitive: an absolute
     operand REPLACES the base entirely (`Path('/srv/.../work') /
-    '/home/astjohn/.ssh/authorized_keys'` is that second path, not a
+    '/home/<control-plane-user>/.ssh/authorized_keys'` is that second path, not a
     concatenation), and `..` segments traverse normally. The name is also
     interpolated into the *remote* path, so a caller who controls the
     remote (a tenant restoring from their own configured destination --

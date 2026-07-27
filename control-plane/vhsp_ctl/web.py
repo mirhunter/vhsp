@@ -1177,7 +1177,7 @@ def _restart_admin_service_deferred() -> None:
     new process has even finished booting.
 
     `sh -c "sleep 2 && sudo systemctl restart ..."` as a detached child
-    needs no new sudo grant (the sleep runs as plain astjohn; only the
+    needs no new sudo grant (the sleep runs as the plain control-plane user; only the
     already-granted systemctl call inside needs privilege) and gives the
     redirect-follow request time to land on the still-alive old worker
     -- showing stale toggle state for a couple seconds, matching the

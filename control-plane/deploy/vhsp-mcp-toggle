@@ -2,32 +2,47 @@
 # Root-owned wrapper invoked via sudo by vhsp_ctl/provisioner.py's
 # enable_mcp_server()/disable_mcp_server() -- same reasoning as every
 # other wrapper script in this directory (see
-# deploy/vhsp-harden-hostdir's own header comment): astjohn's scoped
+# deploy/vhsp-harden-hostdir's own header comment): __VHSP_USER__'s scoped
 # sudoers grant can't safely hand out general `systemctl`/unit-file
 # access, so this exists as one narrow, self-validating action instead.
 #
 # Installs/enables or disables the vhsp-mcp.service systemd unit --
 # nothing else. Doesn't touch the firewall rule or Traefik route (see
 # deploy/vhsp-mcp-firewall and provisioner.py's own Traefik-file write,
-# a plain unprivileged write since astjohn already owns
+# a plain unprivileged write since __VHSP_USER__ already owns
 # ~/traefik/dynamic/) -- kept separate so each wrapper stays a single,
 # auditable action.
 #
 # Args: <enable|disable>
 set -euo pipefail
 
-# Must match wherever this deployment's own checkout actually lives --
-# same "hardcoded internal path constant, kept in sync by convention not
-# enforcement" pattern deploy/vhsp-harden-hostdir uses for TENANTS_DIR.
-# Update this if the checkout ever moves.
-UNIT_SRC="/home/astjohn/vhsp-control-plane/deploy/vhsp-mcp.service"
+# Points at the RENDERED unit (deploy/rendered/), never the committed
+# template beside it -- the template still contains __VHSP_USER__ /
+# __VHSP_HOME__ placeholders, and installing that as a real unit would
+# produce a service systemd can't start (no such user). This script is
+# itself rendered by deploy/vhsp-render, so the path below is already
+# concrete by the time it's installed to /usr/local/sbin.
+#
+# This is the one path where a repo file becomes an installed unit
+# automatically, without an operator running an install step: enabling
+# MCP from the admin UI calls this. That makes the template/rendered
+# distinction load-bearing rather than cosmetic.
+UNIT_SRC="__VHSP_HOME__/vhsp-control-plane/deploy/rendered/vhsp-mcp.service"
 UNIT_DEST="/etc/systemd/system/vhsp-mcp.service"
 
 action="${1:?usage: vhsp-mcp-toggle <enable|disable>}"
 
 case "$action" in
   enable)
-    [[ -f "$UNIT_SRC" ]] || { echo "unit source not found: $UNIT_SRC" >&2; exit 1; }
+    [[ -f "$UNIT_SRC" ]] || {
+      echo "unit source not found: $UNIT_SRC" >&2
+      echo "run deploy/vhsp-render on this host first (see DEPLOYMENT.md)" >&2
+      exit 1
+    }
+    grep -q '__VHSP_' "$UNIT_SRC" && {
+      echo "refusing to install $UNIT_SRC: it still contains unrendered placeholders" >&2
+      exit 1
+    }
     cp "$UNIT_SRC" "$UNIT_DEST"
     systemctl daemon-reload
     systemctl enable --now vhsp-mcp.service
