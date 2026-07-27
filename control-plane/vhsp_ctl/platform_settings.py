@@ -52,3 +52,17 @@ def set_mcp_enabled(enabled: bool, actor: str) -> None:
     settings["mcp_enabled"] = enabled
     _write(settings)
     audit.log_action("admin.mcp_enable" if enabled else "admin.mcp_disable", "", actor)
+
+
+def set_update_check_enabled(enabled: bool, actor: str) -> None:
+    """Opt-in for the GitHub release check (update_check.py). Same
+    toggle mechanism as the two above, but gating a different kind of
+    thing: those expose a surface inbound, this one makes an outbound
+    request. See update_check.py's module docstring for why that is the
+    operator's call to make rather than a default."""
+    settings = _load()
+    settings["update_check_enabled"] = enabled
+    _write(settings)
+    audit.log_action(
+        "admin.update_check_enable" if enabled else "admin.update_check_disable", "", actor
+    )

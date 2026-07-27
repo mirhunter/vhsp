@@ -1,0 +1,63 @@
+name: Release
+
+# Tag-driven: pushing v<version> cuts the release. The tag is the trigger
+# rather than a manual dispatch so that what's released is always exactly
+# a commit that exists in history, never a snapshot of someone's working
+# tree.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history, so generated notes can diff against the previous tag
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The tag and the code must agree. A release tagged v0.3.0 whose
+      # __version__ still says 0.2.0 would make every deployment report
+      # the wrong version and the update banner nag forever, since the
+      # check compares the running __version__ against the release tag.
+      - name: Verify the tag matches vhsp_ctl.__version__
+        run: |
+          version="$(python -c 'import re,pathlib; print(re.search(r"__version__ = \"([^\"]+)\"", pathlib.Path("control-plane/vhsp_ctl/__init__.py").read_text()).group(1))')"
+          tag="${GITHUB_REF_NAME#v}"
+          echo "__version__=$version  tag=$tag"
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match __version__ $version -- bump vhsp_ctl/__init__.py first"
+            exit 1
+          fi
+
+      # Don't publish a release for a commit that doesn't pass its own
+      # tests -- the release is what operators are told to install.
+      - name: Run tests
+        working-directory: control-plane
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt
+          pip install -e '.[dev]'
+          pytest -q
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --notes-start-tag "$(git describe --tags --abbrev=0 "$GITHUB_REF_NAME^" 2>/dev/null || echo '')" \
+            --repo "$GITHUB_REPOSITORY" || \
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            --repo "$GITHUB_REPOSITORY"

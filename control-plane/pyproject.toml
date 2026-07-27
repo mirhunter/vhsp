@@ -1,6 +1,9 @@
 [project]
 name = "vhsp-ctl"
-version = "0.1.0"
+# Read from vhsp_ctl.__version__ rather than duplicated here -- one line
+# to bump at release time, and the running code and the package metadata
+# can't drift apart. See vhsp_ctl/__init__.py and UPDATING.md.
+dynamic = ["version"]
 description = "VHSP control plane: tenant provisioning skeleton"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,6 +17,11 @@ dependencies = [
     "gunicorn>=22.0",
     "cryptography>=42.0",
     "fastmcp>=3.4",
+    # Declared explicitly even though `docker` already pulls it in
+    # transitively: update_check.py imports it directly, and depending on
+    # another package's dependency means a future docker release that
+    # drops or swaps it breaks this one silently.
+    "requests>=2.31",
 ]
 
 [project.optional-dependencies]
@@ -32,3 +40,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools]
 packages = ["vhsp_ctl"]
+
+[tool.setuptools.dynamic]
+version = {attr = "vhsp_ctl.__version__"}

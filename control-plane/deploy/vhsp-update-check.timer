@@ -1,0 +1,16 @@
+[Unit]
+Description=Run the VHSP release update check daily
+
+[Timer]
+# Daily, not hourly: a release is not urgent, and the whole point of the
+# opt-in is to keep the outbound footprint small. RandomizedDelaySec
+# spreads deployments out so every vhsp host doesn't hit the GitHub API
+# at the same second.
+OnCalendar=daily
+RandomizedDelaySec=4h
+# Catches up after downtime -- a host powered off overnight should still
+# check once when it comes back, rather than waiting for the next window.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

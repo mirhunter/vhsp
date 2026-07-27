@@ -1,0 +1,34 @@
+[Unit]
+Description=VHSP release update check
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=__VHSP_USER__
+Group=__VHSP_USER__
+WorkingDirectory=__VHSP_HOME__/vhsp-control-plane
+# Notification only -- this fetches a version number and writes it to
+# STATE_DIR. It downloads no code and applies nothing; see
+# vhsp_ctl/update_check.py's module docstring for why that boundary is
+# deliberate on a control plane with root-equivalent reach.
+#
+# Unlike every other vhsp unit this one needs no VHSP_DOCKER_HOST: it
+# never touches Docker.
+#
+# Runs regardless of the opt-in toggle being off, and exits having done
+# nothing useful in that case -- the CLI decides, not the unit, so an
+# operator flipping the toggle doesn't have to remember to also
+# enable/disable a timer.
+ExecStart=__VHSP_HOME__/vhsp-control-plane/.venv/bin/vhsp update check
+
+# No sudo, no privileged helper, nothing to escalate into -- the one vhsp
+# unit that genuinely doesn't need this relaxed.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/vhsp
+
+[Install]
+WantedBy=multi-user.target
