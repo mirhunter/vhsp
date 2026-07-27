@@ -1,0 +1,35 @@
+# Exact dependency versions this image is built and tested against --
+# generated via `pip freeze` against a clean install of the package list
+# below, on the same python:3.12-alpine base this Dockerfile uses. A
+# follow-up security review flagged that the Dockerfile's bare
+# `pip install flask passlib fido2 ...` (no version pins, no lock file)
+# meant every image rebuild could silently pull different, newer
+# versions of every dependency -- including fido2 (this container's
+# entire WebAuthn/second-factor implementation) and pymysql (the SQL
+# console's transport) -- with no signal that anything changed. Same
+# "pinned lock file separate from loose dev floors" posture as the
+# control-plane's own top-level requirements-lock.txt.
+#
+# Regenerate after intentionally upgrading a dependency:
+#   docker run --rm python:3.12-alpine sh -c \
+#     "pip install --no-cache-dir flask passlib fido2 pymysql pyotp qrcode gunicorn >/dev/null && pip freeze"
+# and re-verify the image still builds and the app still starts before
+# committing the new pins.
+
+blinker==1.9.0
+cffi==2.1.0
+click==8.4.2
+cryptography==49.0.0
+fido2==2.2.1
+Flask==3.1.3
+gunicorn==26.0.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+MarkupSafe==3.0.3
+packaging==26.2
+passlib==1.7.4
+pycparser==3.0
+PyMySQL==1.2.0
+PyOTP==2.10.0
+qrcode==8.2
+Werkzeug==3.1.8

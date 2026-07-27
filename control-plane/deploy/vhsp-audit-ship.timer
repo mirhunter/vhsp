@@ -1,0 +1,14 @@
+[Unit]
+Description=VHSP audit log off-host shipping (every minute)
+
+[Timer]
+# Tighter than the backup reconciler's ~2 minutes (vhsp-backup-reconcile.timer)
+# on purpose -- the whole point of shipping this off-host is minimizing
+# how much of the trail a host compromise could still erase before it's
+# out of reach, and a single push here is cheap (a handful of JSON lines,
+# not a tenant snapshot), so there's little cost to running it often.
+OnCalendar=*:0/1
+Persistent=true
+
+[Install]
+WantedBy=timers.target

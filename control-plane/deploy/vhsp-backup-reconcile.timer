@@ -1,0 +1,16 @@
+[Unit]
+Description=VHSP tenant backup config/on-demand reconciler (every ~2 minutes)
+
+[Timer]
+# Tenant-admin's Backups page has no host/Docker access of its own -- it
+# only ever writes backup_request.json / touches .vhsp-backup-now on the
+# shared phpconf volume (see images/tenant-admin/app.py and backup.py's
+# process_requests). This is the external watcher that actually acts on
+# those files, so a tenant's destination/key/on-demand-backup change takes
+# effect within about this interval, not instantly -- a deliberate,
+# documented tradeoff, not a bug.
+OnCalendar=*:0/2
+Persistent=true
+
+[Install]
+WantedBy=timers.target

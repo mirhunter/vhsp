@@ -1,0 +1,55 @@
+[Unit]
+Description=VHSP operator MCP server
+After=network-online.target docker.service vhsp-docker-proxy.service
+Wants=network-online.target vhsp-docker-proxy.service
+
+[Service]
+Type=simple
+User=astjohn
+Group=astjohn
+WorkingDirectory=/home/astjohn/vhsp-control-plane
+# Same scoped Docker access as vhsp-admin.service -- this process calls
+# the exact same provisioner.py functions (create_tenant, destroy_tenant,
+# etc.), so it needs the exact same access. See that unit's own comment
+# and the control-plane README's "Docker socket exposure" section.
+Environment=VHSP_DOCKER_HOST=tcp://127.0.0.1:2375
+# Installing and enabling this unit at all is already the operator's
+# opt-in decision (a whole separate, optional systemd unit, unlike the
+# REST API Blueprint which shares vhsp-admin.service's always-on
+# process and needs its own runtime flag to stay dormant). This
+# Environment= line is a second, redundant safety net -- mcp_server.py's
+# own main() refuses to bind at all if this isn't set, in case this
+# unit file is ever copied/enabled without reading what it does first.
+# Own flag, separate from VHSP_API_ENABLED (the REST API's own toggle) --
+# see config.py's MCP_ENABLED docstring for why they're decoupled. When
+# this unit is installed via provisioner.enable_mcp_server() (the UI
+# toggle's own automation), STATE_DIR/platform_settings.json already has
+# mcp_enabled=true by the time this process starts, so this line is
+# belt-and-suspenders for that path -- it matters most for anyone who
+# installs/enables this unit by hand instead.
+Environment=VHSP_MCP_ENABLED=1
+# 0.0.0.0, not 127.0.0.1 (the code default, safe for local dev) --
+# reached via Traefik the same way vhsp-admin.service is: a dynamic
+# file-provider route to http://<traefik-network-gateway-ip>:8001, from
+# inside the Traefik container's own network namespace, where a
+# loopback-only bind on the host isn't reachable at all. See
+# vhsp-admin.service's own identical comment on VHSP_ADMIN_BIND_HOST,
+# and DEPLOYMENT.md for the exact dynamic-route YAML this needs
+# (parallel to the existing vhsp-admin.yml, not committed to this repo
+# for the same reason that one isn't).
+Environment=VHSP_MCP_BIND_HOST=0.0.0.0
+Environment=VHSP_MCP_BIND_PORT=8001
+ExecStart=/home/astjohn/vhsp-control-plane/.venv/bin/python3 -m vhsp_ctl.mcp_server
+Restart=on-failure
+RestartSec=2
+
+# Same reasoning as vhsp-admin.service's identical setting -- this
+# process shells out to sudo for the fail2ban-log-tail wrapper script
+# (provisioner.tail_fail2ban_log, used by the get_fail2ban_log tool),
+# via the same scoped sudoers grant astjohn already has (deploy/vhsp-sudoers
+# is keyed to specific scripts, not specific processes, so no separate
+# grant is needed for this unit).
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

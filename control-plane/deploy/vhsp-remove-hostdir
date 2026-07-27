@@ -1,0 +1,34 @@
+#!/bin/bash
+# Root-owned helper invoked via sudo by provisioner.py's _remove_host_dir --
+# see deploy/vhsp-harden-hostdir's header comment for why this is a
+# wrapper script rather than a wildcarded sudoers entry.
+#
+# Args: <slug> <purpose>. Unmounts, drops the matching /etc/fstab entry
+# (matched by host_path substring AND the "# vhsp-managed" tag, same two
+# conditions provisioner.py's Python version used to check, so a foreign
+# fstab line can never be touched even if it happened to contain the
+# tenant's path as a substring), then deletes host_path outright -- see
+# _remove_host_dir's own docstring for why full deletion, not just
+# unmount, is deliberate here.
+set -euo pipefail
+
+TENANTS_DIR="/srv/vhsp/tenants"  # must match config.py's TENANTS_DIR on this deployment
+
+slug="${1:?usage: vhsp-remove-hostdir <slug> <purpose>}"
+purpose="${2:?usage: vhsp-remove-hostdir <slug> <purpose>}"
+
+[[ "$slug" =~ ^[a-z0-9-]+$ ]] || { echo "invalid slug: $slug" >&2; exit 1; }
+[[ "$purpose" =~ ^[a-z0-9_]+$ ]] || { echo "invalid purpose: $purpose" >&2; exit 1; }
+
+host_path="$TENANTS_DIR/$slug/$purpose"
+
+umount "$host_path" 2>/dev/null || true
+
+tmpfile="$(mktemp)"
+trap 'rm -f "$tmpfile"' EXIT
+awk -v hp="$host_path" '!(index($0, hp) > 0 && index($0, "# vhsp-managed") > 0)' /etc/fstab > "$tmpfile"
+if ! cmp -s "$tmpfile" /etc/fstab; then
+  cat "$tmpfile" > /etc/fstab
+fi
+
+rm -rf -- "$host_path"

@@ -1,0 +1,42 @@
+#!/bin/bash
+# Root-owned wrapper invoked via sudo by vhsp_ctl/provisioner.py's
+# enable_mcp_server()/disable_mcp_server() -- same reasoning as every
+# other wrapper script in this directory (see
+# deploy/vhsp-harden-hostdir's own header comment): astjohn's scoped
+# sudoers grant can't safely hand out general `systemctl`/unit-file
+# access, so this exists as one narrow, self-validating action instead.
+#
+# Installs/enables or disables the vhsp-mcp.service systemd unit --
+# nothing else. Doesn't touch the firewall rule or Traefik route (see
+# deploy/vhsp-mcp-firewall and provisioner.py's own Traefik-file write,
+# a plain unprivileged write since astjohn already owns
+# ~/traefik/dynamic/) -- kept separate so each wrapper stays a single,
+# auditable action.
+#
+# Args: <enable|disable>
+set -euo pipefail
+
+# Must match wherever this deployment's own checkout actually lives --
+# same "hardcoded internal path constant, kept in sync by convention not
+# enforcement" pattern deploy/vhsp-harden-hostdir uses for TENANTS_DIR.
+# Update this if the checkout ever moves.
+UNIT_SRC="/home/astjohn/vhsp-control-plane/deploy/vhsp-mcp.service"
+UNIT_DEST="/etc/systemd/system/vhsp-mcp.service"
+
+action="${1:?usage: vhsp-mcp-toggle <enable|disable>}"
+
+case "$action" in
+  enable)
+    [[ -f "$UNIT_SRC" ]] || { echo "unit source not found: $UNIT_SRC" >&2; exit 1; }
+    cp "$UNIT_SRC" "$UNIT_DEST"
+    systemctl daemon-reload
+    systemctl enable --now vhsp-mcp.service
+    ;;
+  disable)
+    systemctl disable --now vhsp-mcp.service
+    ;;
+  *)
+    echo "invalid action: $action" >&2
+    exit 1
+    ;;
+esac

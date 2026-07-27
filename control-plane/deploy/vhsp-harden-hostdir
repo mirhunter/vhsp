@@ -1,0 +1,40 @@
+#!/bin/bash
+# Root-owned helper invoked via sudo by provisioner.py's _harden_host_dir --
+# see that function's docstring for *why* this needs to happen at the host
+# level (Docker's bind-mount driver silently drops noexec/nosuid/nodev
+# unless applied via a separate remount pass first).
+#
+# Exists as a wrapper rather than a sudoers Cmnd_Alias with wildcarded
+# paths because modern sudo (rightly) refuses wildcards in command
+# arguments -- see `sudo visudo -cf` output if you're ever tempted to put
+# `/srv/vhsp/tenants/*` back into sudoers directly. Validating the two
+# arguments here, then building the path internally, is the standard way
+# to give sudo access to an action with a dynamic target without handing
+# out a broad grant.
+#
+# Args: <slug> <purpose> -- both already validated by the caller
+# (slugify()'s charset for slug; a fixed set of literal strings for
+# purpose), but re-validated here too since this script is what's
+# actually trusted with root, not its caller.
+set -euo pipefail
+
+TENANTS_DIR="/srv/vhsp/tenants"  # must match config.py's TENANTS_DIR on this deployment
+
+slug="${1:?usage: vhsp-harden-hostdir <slug> <purpose>}"
+purpose="${2:?usage: vhsp-harden-hostdir <slug> <purpose>}"
+
+[[ "$slug" =~ ^[a-z0-9-]+$ ]] || { echo "invalid slug: $slug" >&2; exit 1; }
+[[ "$purpose" =~ ^[a-z0-9_]+$ ]] || { echo "invalid purpose: $purpose" >&2; exit 1; }
+
+host_path="$TENANTS_DIR/$slug/$purpose"
+[[ -d "$host_path" ]] || { echo "no such directory: $host_path" >&2; exit 1; }
+
+fstab_line="$host_path $host_path none bind,noexec,nosuid,nodev 0 0 # vhsp-managed"
+if ! grep -qF "$host_path" /etc/fstab; then
+  echo "$fstab_line" >> /etc/fstab
+fi
+
+already_mounted="$(findmnt -no TARGET --target "$host_path" 2>/dev/null || true)"
+if [[ "$already_mounted" != "$host_path" ]]; then
+  mount --bind "$host_path" "$host_path" -o noexec,nosuid,nodev
+fi

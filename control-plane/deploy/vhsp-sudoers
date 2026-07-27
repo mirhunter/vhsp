@@ -1,0 +1,78 @@
+# Scoped sudo grant for the vhsp control-plane user (astjohn by default).
+#
+# Replaces a blanket `ALL=(ALL) NOPASSWD:ALL` grant (DEPLOYMENT.md's old
+# one-liner) with sudo access to exactly five root-owned wrapper scripts --
+# deploy/vhsp-harden-hostdir, deploy/vhsp-remove-hostdir,
+# deploy/vhsp-backup-tar, deploy/vhsp-restore-clean, and
+# deploy/vhsp-fail2ban-tenant-jail, all installed to /usr/local/sbin --
+# rather than the raw mount/umount/tee/rm/tar/find/chown/fail2ban-client
+# commands those scripts wrap, plus restart access for the four
+# vhsp-managed systemd units (see VHSP_RESTART below). Everything else
+# this user might try to sudo (e.g. a shell from a compromised
+# vhsp-admin.service RCE) is refused, per the control-plane README's
+# "Docker socket exposure" section reasoning applied to this second
+# root-equivalent surface.
+#
+# No argument pattern is specified for either command below -- that's
+# deliberate, not an oversight: sudoers can't safely wildcard the
+# tenant-specific paths these scripts operate on (modern sudo refuses
+# wildcards in command arguments entirely), so the validation instead
+# lives inside the wrapper scripts themselves, which is the standard
+# pattern for "sudo access to an action with a dynamic target." Leaving
+# the argument list unspecified in sudoers just means "any arguments",
+# which is fine here because the scripts are what's actually trusted
+# with root, not this file.
+#
+# Install as /etc/sudoers.d/astjohn (mode 440), replacing the old file,
+# and ALWAYS verify with `sudo visudo -cf /etc/sudoers.d/astjohn` before
+# trusting it -- a syntax error in a sudoers.d file can lock out sudo
+# entirely. Install the two scripts themselves to /usr/local/sbin first
+# (root:root, 0755) -- see DEPLOYMENT.md.
+
+Cmnd_Alias VHSP_HOSTDIR = /usr/local/sbin/vhsp-harden-hostdir, /usr/local/sbin/vhsp-remove-hostdir
+
+# Backup creation (_tar_directory) and restore-into-existing-tenant
+# (_restore_into_existing_tenant) both need root for the same reason
+# VHSP_HOSTDIR's scripts do -- a running container has already chowned
+# parts of a tenant's data to its own internal uid, which this
+# unprivileged process can't read/clear itself. Discovered missing from
+# this file (a real regression: backup creation silently stopped
+# working non-interactively) while doing the backup-key-encryption work
+# these two scripts were added alongside.
+Cmnd_Alias VHSP_BACKUP = /usr/local/sbin/vhsp-backup-tar, /usr/local/sbin/vhsp-restore-clean
+
+# Restart access for exactly the four vhsp-managed systemd units --
+# needed so a code deploy (rsync + restart) doesn't require an
+# interactive password every time, without granting `systemctl` access
+# to any other unit on the box (can't start/stop/enable/disable
+# anything else, can't touch unit files themselves). Each entry is a
+# fixed literal command line, not a wildcard -- sudoers' wildcard
+# restriction (see vhsp-harden-hostdir's own header comment) only
+# applies to glob characters, not to listing multiple exact commands.
+Cmnd_Alias VHSP_RESTART = /usr/bin/systemctl restart vhsp-admin.service, \
+                          /usr/bin/systemctl restart vhsp-backup.service, \
+                          /usr/bin/systemctl restart vhsp-backup-reconcile.service, \
+                          /usr/bin/systemctl restart vhsp-docker-proxy.service
+
+# Per-tenant SFTP fail2ban jails -- genuinely isolated per tenant
+# (distinct ports, unlike the shared/platform-wide HTTP jails), so
+# these get generated/torn down at tenant create/destroy time. See
+# vhsp-fail2ban-tenant-jail's own header comment.
+Cmnd_Alias VHSP_FAIL2BAN_TENANT = /usr/local/sbin/vhsp-fail2ban-tenant-jail
+
+# Read-only access to fail2ban's own log for the operator UI's /fail2ban
+# page -- /var/log/fail2ban.log isn't documented anywhere as readable by
+# a non-root user, so this exists rather than loosening that file's own
+# permissions. See vhsp-fail2ban-log-tail's own header comment.
+Cmnd_Alias VHSP_FAIL2BAN_LOG = /usr/local/sbin/vhsp-fail2ban-log-tail
+
+# The operator UI's MCP on/off toggle (/account/platform-access in
+# web.py, via provisioner.enable_mcp_server()/disable_mcp_server()) --
+# installs/enables or disables the vhsp-mcp.service unit, and opens/
+# closes exactly one firewall port scoped to the Traefik network's own
+# subnet. Two separate wrappers so each stays a single, auditable
+# action; see each script's own header comment.
+Cmnd_Alias VHSP_MCP_TOGGLE = /usr/local/sbin/vhsp-mcp-toggle
+Cmnd_Alias VHSP_MCP_FIREWALL = /usr/local/sbin/vhsp-mcp-firewall
+
+astjohn ALL=(root) NOPASSWD: VHSP_HOSTDIR, VHSP_RESTART, VHSP_BACKUP, VHSP_FAIL2BAN_TENANT, VHSP_FAIL2BAN_LOG, VHSP_MCP_TOGGLE, VHSP_MCP_FIREWALL

@@ -1,0 +1,31 @@
+#!/bin/bash
+# Root-owned helper invoked via sudo by backup.py's
+# _restore_into_existing_tenant -- same reasoning as
+# deploy/vhsp-harden-hostdir's own header comment (self-validating
+# wrapper script instead of a wildcarded sudoers entry).
+#
+# Args: <slug> <purpose>. Empties host_path's contents and reclaims
+# ownership of the directory inode itself, both root-only operations --
+# see _restore_into_existing_tenant's own docstring in backup.py for why
+# (a running container has already chowned parts of this tree to its
+# own internal uid, which this unprivileged process can't clear itself).
+# Uses sudo's own SUDO_UID/SUDO_GID (the invoking user's real ids) for
+# the chown target rather than taking them as arguments -- matches the
+# original code's os.geteuid():os.getegid() intent exactly ("give this
+# back to whoever's running the control plane"), with less argument
+# surface for this script to validate.
+set -euo pipefail
+
+TENANTS_DIR="/srv/vhsp/tenants"  # must match config.py's TENANTS_DIR on this deployment
+
+slug="${1:?usage: vhsp-restore-clean <slug> <purpose>}"
+purpose="${2:?usage: vhsp-restore-clean <slug> <purpose>}"
+
+[[ "$slug" =~ ^[a-z0-9-]+$ ]] || { echo "invalid slug: $slug" >&2; exit 1; }
+[[ "$purpose" =~ ^(webroot|mail|phpconf)$ ]] || { echo "invalid purpose: $purpose" >&2; exit 1; }
+
+host_path="$TENANTS_DIR/$slug/$purpose"
+[[ -d "$host_path" ]] || { echo "no such directory: $host_path" >&2; exit 1; }
+
+find "$host_path" -mindepth 1 -delete
+chown "${SUDO_UID:-0}:${SUDO_GID:-0}" "$host_path"

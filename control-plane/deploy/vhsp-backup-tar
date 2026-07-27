@@ -1,0 +1,40 @@
+#!/bin/bash
+# Root-owned helper invoked via sudo by backup.py's _tar_directory --
+# same reasoning as deploy/vhsp-harden-hostdir's own header comment for
+# why this is a wrapper script (self-validating its own arguments)
+# rather than a wildcarded sudoers entry: modern sudo refuses wildcards
+# in command arguments, so a Cmnd_Alias can't safely express "tar any
+# directory under /srv/vhsp/tenants" directly.
+#
+# Args: <slug> <purpose> <dest_file>. Root is needed here because some
+# tenant data (mail's maildir, in particular) is chowned to a container-
+# internal uid this unprivileged process can't read directly -- see
+# _tar_directory's own docstring in backup.py.
+set -euo pipefail
+
+TENANTS_DIR="/srv/vhsp/tenants"        # must match config.py's TENANTS_DIR on this deployment
+BACKUP_WORKDIR="/srv/vhsp/backup/work" # must match config.py's BACKUP_WORKDIR on this deployment
+
+slug="${1:?usage: vhsp-backup-tar <slug> <purpose> <dest_file>}"
+purpose="${2:?usage: vhsp-backup-tar <slug> <purpose> <dest_file>}"
+dest_file="${3:?usage: vhsp-backup-tar <slug> <purpose> <dest_file>}"
+
+[[ "$slug" =~ ^[a-z0-9-]+$ ]] || { echo "invalid slug: $slug" >&2; exit 1; }
+# Restricted to the exact three purposes _tar_directory is ever called
+# with (webroot/mail/phpconf) -- tighter than a generic charset check,
+# since this script knows precisely what it's for.
+[[ "$purpose" =~ ^(webroot|mail|phpconf)$ ]] || { echo "invalid purpose: $purpose" >&2; exit 1; }
+
+src_dir="$TENANTS_DIR/$slug/$purpose"
+[[ -d "$src_dir" ]] || { echo "no such directory: $src_dir" >&2; exit 1; }
+
+# realpath -m tolerates a dest_file that doesn't exist yet (the tar
+# output itself) while still resolving any ../ traversal, so the
+# under-BACKUP_WORKDIR check below can't be bypassed by a relative path.
+resolved_dest="$(realpath -m -- "$dest_file")"
+case "$resolved_dest" in
+  "$BACKUP_WORKDIR"/*) ;;
+  *) echo "dest_file must be under $BACKUP_WORKDIR: $dest_file" >&2; exit 1 ;;
+esac
+
+exec tar -czf "$resolved_dest" -C "$src_dir" .

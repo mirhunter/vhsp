@@ -1,0 +1,46 @@
+#!/bin/bash
+# Root-owned wrapper invoked via sudo by vhsp_ctl/provisioner.py's
+# enable_mcp_server()/disable_mcp_server() -- same reasoning as every
+# other wrapper script in this directory (see
+# deploy/vhsp-harden-hostdir's own header comment).
+#
+# Adds or removes exactly one ufw rule: the MCP server's port, scoped to
+# the Traefik docker network's own subnet only (never the public
+# interface) -- mirrors the existing manual rule documented in
+# DEPLOYMENT.md's "Operator API + MCP" step, now automated. The port is
+# hardcoded rather than accepted as an argument: a wrapper that opens
+# whatever port it's told is a materially more dangerous primitive than
+# one that only ever opens this one, fixed port. If config.py's
+# MCP_BIND_PORT default (8001) is ever changed, this must be updated to
+# match, same drift risk `vhsp doctor` already exists to catch elsewhere.
+#
+# Args: <enable|disable> <subnet-cidr>
+# The subnet is computed by provisioner.py from a live `docker network
+# inspect` call, not typed by an operator -- re-validated here anyway,
+# since this script (not its caller) is what's actually trusted with
+# root.
+set -euo pipefail
+
+MCP_PORT=8001
+
+action="${1:?usage: vhsp-mcp-firewall <enable|disable> <subnet-cidr>}"
+subnet="${2:?usage: vhsp-mcp-firewall <enable|disable> <subnet-cidr>}"
+
+[[ "$subnet" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}/[0-9]{1,2}$ ]] \
+  || { echo "invalid subnet: $subnet" >&2; exit 1; }
+
+case "$action" in
+  enable)
+    ufw allow from "$subnet" to any port "$MCP_PORT" proto tcp
+    ;;
+  disable)
+    # `|| true` -- disabling when the rule was never added (e.g. a retry
+    # after a partial failure) should be a no-op, not an error; ufw exits
+    # non-zero when asked to delete a rule that doesn't exist.
+    ufw delete allow from "$subnet" to any port "$MCP_PORT" proto tcp || true
+    ;;
+  *)
+    echo "invalid action: $action" >&2
+    exit 1
+    ;;
+esac

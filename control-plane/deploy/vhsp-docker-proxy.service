@@ -1,0 +1,49 @@
+[Unit]
+Description=VHSP Docker socket proxy (scoped API for the control plane)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+# Deliberately root, not astjohn -- this is the one piece that still
+# needs raw docker.sock access, by design. The whole point of this unit
+# is that nothing else does: astjohn (which runs vhsp-admin/vhsp-backup/
+# vhsp-backup-reconcile/the CLI) is removed from the `docker` group, and
+# those processes reach Docker only through the scoped API this proxy
+# exposes on loopback (VHSP_DOCKER_HOST=tcp://127.0.0.1:2375 -- see
+# config.py's DOCKER_HOST_URL and the control-plane README's "Docker
+# socket exposure" section for the full reasoning and API allow-list).
+ExecStartPre=-/usr/bin/docker rm -f vhsp-docker-proxy
+ExecStart=/usr/bin/docker run --rm --name vhsp-docker-proxy \
+  -p 127.0.0.1:2375:2375 \
+  -v /var/run/docker.sock:/var/run/docker.sock:ro \
+  -e CONTAINERS=1 \
+  -e POST=1 \
+  -e VOLUMES=1 \
+  -e NETWORKS=1 \
+  -e EXEC=1 \
+  -e IMAGES=1 \
+  -e INFO=1 \
+  -e PING=1 \
+  -e VERSION=1 \
+  -e LOGS=1 \
+  -e SWARM=0 \
+  -e SERVICES=0 \
+  -e SECRETS=0 \
+  -e CONFIGS=0 \
+  -e PLUGINS=0 \
+  -e NODES=0 \
+  -e BUILD=0 \
+  -e COMMIT=0 \
+  -e DISTRIBUTION=0 \
+  -e AUTH=0 \
+  -e TASKS=0 \
+  -e SESSION=0 \
+  -e SYSTEM=0 \
+  tecnativa/docker-socket-proxy:latest
+ExecStop=/usr/bin/docker stop vhsp-docker-proxy
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

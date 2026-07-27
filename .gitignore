@@ -1,0 +1,14 @@
+# Real credentials — never commit
+creds.md
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+
+# Node
+node_modules/
+
+# Local Claude Code settings
+.claude/settings.local.json

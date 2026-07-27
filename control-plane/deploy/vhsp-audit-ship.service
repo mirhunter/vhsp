@@ -1,0 +1,23 @@
+[Unit]
+Description=VHSP audit log off-host shipping
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=astjohn
+Group=astjohn
+WorkingDirectory=/home/astjohn/vhsp-control-plane
+# Same operator SFTP destination tenant backups already use -- see
+# backup.ship_audit_log's own docstring for why that's deliberate, not a
+# shortcut. These are the SAME four VHSP_BACKUP_SFTP_* values already set
+# on vhsp-admin.service/vhsp-backup.service/vhsp-backup-reconcile.service
+# on a real deployment -- each systemd unit reads its own env at process
+# start, no shared env file, so this one needs them set independently
+# too, not inherited from the others.
+ExecStart=/home/astjohn/vhsp-control-plane/.venv/bin/vhsp backup ship-audit-log
+
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

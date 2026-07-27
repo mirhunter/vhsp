@@ -1,0 +1,57 @@
+[Unit]
+Description=VHSP admin web UI
+After=network-online.target docker.service vhsp-docker-proxy.service
+Wants=network-online.target vhsp-docker-proxy.service
+
+[Service]
+Type=simple
+User=astjohn
+Group=astjohn
+WorkingDirectory=/home/astjohn/vhsp-control-plane
+# Talks to Docker through vhsp-docker-proxy.service's scoped API, not the
+# raw socket -- astjohn is deliberately NOT in the `docker` group on a
+# hardened deployment. See config.py's DOCKER_HOST_URL docstring and the
+# control-plane README's "Docker socket exposure" section.
+Environment=VHSP_DOCKER_HOST=tcp://127.0.0.1:2375
+# 0.0.0.0, not the mgmt-interface IP -- this deployment went public
+# (real Let's Encrypt cert via the swarm's Traefik at vhsp.dvce.us) for
+# WebAuthn's secure-context requirement, per the user's own choice to do
+# that now rather than wait for WebAuthn to land first (see
+# 2fa-admin-ui-planned in project memory). The actual perimeter here is
+# the firewall in front of the VM's public-facing subnet, not this bind
+# address -- see vhsp-infra-access in project memory before assuming a
+# narrower bind would add real isolation on this specific deployment.
+Environment=VHSP_ADMIN_BIND_HOST=0.0.0.0
+Environment=VHSP_ADMIN_BIND_PORT=8000
+# This deployment sits behind exactly one reverse proxy hop (the swarm's
+# Traefik, routing vhsp.dvce.us -> here over plain HTTP) -- see config.py's
+# ADMIN_TRUST_PROXY docstring for why this must stay off unless that's true.
+Environment=VHSP_ADMIN_TRUST_PROXY=1
+# gunicorn, not the `vhsp-admin` console script -- that's `app.run()`,
+# Flask's own dev server, which prints its own warning against exactly
+# this use (single request at a time, not hardened for anything actually
+# reachable). Sessions are cookie-based (Flask's default), not
+# server-side, so multiple worker processes need no shared state -- safe
+# to run more than one. Wrapped in a shell so ${VHSP_ADMIN_BIND_HOST}/
+# ${VHSP_ADMIN_BIND_PORT} (set via Environment= above) expand into
+# --bind -- systemd's own ExecStart doesn't do shell-style substitution.
+# --timeout 180, well above gunicorn's own 30s default: full tenant
+# provisioning (create_tenant's six containers -- web/waf/db/sftp/mail/
+# tenant-admin, plus volumes, DNS routing, and a fail2ban jail) is a
+# single synchronous request that can genuinely take 60-90s. Without
+# this, gunicorn SIGKILLs the worker mid-request, the client gets a 500,
+# and the tenant is left silently created anyway (the docker calls
+# already succeeded) -- discovered via the new operator API's own
+# create_tenant round-trip test, but it was already a latent bug in this
+# same route as reached from the web UI's own "New tenant" form.
+ExecStart=/bin/sh -c 'exec /home/astjohn/vhsp-control-plane/.venv/bin/gunicorn --workers 2 --timeout 180 --bind ${VHSP_ADMIN_BIND_HOST}:${VHSP_ADMIN_BIND_PORT} vhsp_ctl.web:app'
+Restart=on-failure
+RestartSec=2
+
+# The control plane's provisioner shells out to sudo for mount/fstab
+# hardening (see provisioner.py's _harden_host_dir) -- astjohn's
+# passwordless sudo is what makes that work, same as the CLI path.
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

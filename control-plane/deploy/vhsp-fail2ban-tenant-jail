@@ -1,0 +1,57 @@
+#!/bin/bash
+# Root-owned helper invoked via sudo by provisioner.py's create_tenant/
+# destroy_tenant -- same reasoning as deploy/vhsp-harden-hostdir's own
+# header comment for why this is a wrapper script (self-validating its
+# own arguments) rather than a wildcarded sudoers entry.
+#
+# Unlike [vhsp-tenant-admin-login]'s single shared jail (a ban there is
+# platform-wide regardless, since every tenant shares port 443 through
+# one Traefik instance -- see the control-plane README's fail2ban
+# section), SFTP genuinely has a distinct port per tenant, so a real
+# per-tenant jail here means a ban actually stays scoped to just this
+# tenant's own port.
+#
+# Args: <slug> <ssh_port> <install|remove>. install writes
+# /etc/fail2ban/jail.d/vhsp-sftp-<slug>.conf using the vhsp-tenant-sftp
+# filter (deploy/fail2ban/filter.d/vhsp-tenant-sftp.conf) -- reuses the
+# stock sshd filter's own failregex definitions (atmoz/sftp is OpenSSH
+# under the hood, confirmed its logs are standard OpenSSH content) but
+# overrides date-parsing, since this specific log has no timestamps at
+# all (see that filter file's own header comment for why). remove
+# deletes the jail file. Either way, reload fail2ban afterward so
+# jail.d changes actually take effect.
+set -euo pipefail
+
+TENANTS_DIR="/srv/vhsp/tenants"       # must match config.py's TENANTS_DIR on this deployment
+JAIL_DIR="/etc/fail2ban/jail.d"
+
+slug="${1:?usage: vhsp-fail2ban-tenant-jail <slug> <ssh_port> <install|remove>}"
+ssh_port="${2:?usage: vhsp-fail2ban-tenant-jail <slug> <ssh_port> <install|remove>}"
+action="${3:?usage: vhsp-fail2ban-tenant-jail <slug> <ssh_port> <install|remove>}"
+
+[[ "$slug" =~ ^[a-z0-9-]+$ ]] || { echo "invalid slug: $slug" >&2; exit 1; }
+[[ "$ssh_port" =~ ^[0-9]+$ ]] || { echo "invalid ssh_port: $ssh_port" >&2; exit 1; }
+[[ "$action" =~ ^(install|remove)$ ]] || { echo "invalid action: $action (must be install or remove)" >&2; exit 1; }
+
+jail_file="$JAIL_DIR/vhsp-sftp-$slug.conf"
+
+if [[ "$action" == "install" ]]; then
+  # Pre-create the log file rather than trusting the SFTP container has
+  # already started and written to it by the time this runs -- same
+  # "fail2ban's config test hard-fails on a logpath matching zero files"
+  # lesson the tenant-admin-login jail's own rollout already hit.
+  mkdir -p "$TENANTS_DIR/$slug/logs"
+  touch "$TENANTS_DIR/$slug/logs/sftp.log"
+  cat > "$jail_file" <<CONF
+[vhsp-sftp-$slug]
+enabled = true
+port = $ssh_port
+filter = vhsp-tenant-sftp
+logpath = $TENANTS_DIR/$slug/logs/sftp.log
+ignorecommand = /usr/local/sbin/vhsp-fail2ban-allowlist-check <ip> $slug
+CONF
+else
+  rm -f "$jail_file"
+fi
+
+fail2ban-client reload

@@ -1,0 +1,21 @@
+swagger-ui-bundle.js, swagger-ui-standalone-preset.js, and swagger-ui.css
+are the pre-built distribution of Swagger UI (swagger-ui-dist on npm,
+version 5.32.11 at the time this was vendored -- see
+vhsp_ctl/static/README.md for how to update). Vendored, not loaded from
+a CDN, matching this project's "no external runtime dependencies"
+posture (same pattern as images/tenant-admin/static/'s CodeMirror
+bundle).
+
+Copyright 2026 SmartBear Software
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.

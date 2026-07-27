@@ -1,0 +1,65 @@
+#!/bin/bash
+# fail2ban ignorecommand hook -- run on every ban decision (not every
+# log line, so a python3 subprocess per call is fine, not a hot path).
+# Exit 0 = ignore this IP (don't ban), matching fail2ban's documented
+# ignorecommand contract. Exit non-zero = proceed with the normal ban.
+#
+# Runs as fail2ban's own systemd service, which is already root -- this
+# script does NOT go through astjohn's scoped sudoers grant at all,
+# unlike every other wrapper script in this directory.
+#
+# Args: <ip> [tenant-slug]. Always checks the platform-wide operator
+# allowlist (vhsp_ctl/fail2ban_allowlist.py's own file); if a tenant
+# slug is also passed (per-tenant jails only -- see
+# vhsp-fail2ban-tenant-jail), additionally checks that ONE tenant's own
+# allowlist. A jail with no tenant concept (sshd, the operator admin-UI
+# login jail) never passes a slug, so only the operator list applies
+# there -- correct, since there's no tenant to scope to.
+#
+# CIDR containment (not just exact-string matching) needs real IP math,
+# so this shells out to Python's ipaddress module rather than
+# hand-rolling it in bash -- reliability here matters more than
+# avoiding one more process per (infrequent) ban decision.
+set -euo pipefail
+
+OPERATOR_LIST="/srv/vhsp/fail2ban_operator_allowlist.txt"   # must match config.py's FAIL2BAN_OPERATOR_ALLOWLIST_PATH
+TENANTS_DIR="/srv/vhsp/tenants"                              # must match config.py's TENANTS_DIR
+
+ip="${1:?usage: vhsp-fail2ban-allowlist-check <ip> [tenant-slug]}"
+slug="${2:-}"
+
+check_list() {
+  local file="$1"
+  [[ -f "$file" ]] || return 1
+  python3 -c "
+import ipaddress, sys
+try:
+    ip = ipaddress.ip_address(sys.argv[1])
+except ValueError:
+    sys.exit(1)
+with open(sys.argv[2]) as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            if ip in ipaddress.ip_network(line, strict=False):
+                sys.exit(0)
+        except ValueError:
+            continue
+sys.exit(1)
+" "$ip" "$file"
+}
+
+if check_list "$OPERATOR_LIST"; then
+  exit 0
+fi
+
+if [[ -n "$slug" ]]; then
+  [[ "$slug" =~ ^[a-z0-9-]+$ ]] || exit 1
+  if check_list "$TENANTS_DIR/$slug/phpconf/fail2ban_allowlist.txt"; then
+    exit 0
+  fi
+fi
+
+exit 1

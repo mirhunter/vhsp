@@ -1,0 +1,27 @@
+[Unit]
+Description=VHSP tenant backup config/on-demand reconciler
+After=network-online.target docker.service vhsp-docker-proxy.service
+Wants=network-online.target vhsp-docker-proxy.service
+
+[Service]
+Type=oneshot
+User=astjohn
+Group=astjohn
+WorkingDirectory=/home/astjohn/vhsp-control-plane
+# Talks to Docker through vhsp-docker-proxy.service's scoped API, not the
+# raw socket -- see vhsp-admin.service's own comment and the control-plane
+# README's "Docker socket exposure" section for the full reasoning.
+Environment=VHSP_DOCKER_HOST=tcp://127.0.0.1:2375
+# Only needed for the tenant-destination push path (a tenant's own
+# backup_dest_* fields, set via tenant-admin's Backups page and read
+# straight from the registry) -- these are NOT the operator destination's
+# own env vars, images/tenant-admin/app.py has no host access at all and
+# never reads these directly; see backup.py's process_requests docstring
+# and architecture.md's "Backups per tenant" section for the full
+# request-file-plus-reconciler shape this exists to drive.
+ExecStart=/home/astjohn/vhsp-control-plane/.venv/bin/vhsp backup process-requests
+
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

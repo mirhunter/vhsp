@@ -1,0 +1,82 @@
+# vhsp's fail2ban config -- see the control-plane README's fail2ban
+# section for the full design (why fail2ban over CrowdSec, the
+# operator/tenant allowlist mechanism, and what each jail actually
+# protects).
+#
+# Installed as /etc/fail2ban/jail.local (fail2ban reads jail.conf, then
+# jail.local as local overrides -- .local is the correct place for
+# deployment-specific config, never edit jail.conf itself). Per-tenant
+# jails (SFTP -- see deploy/vhsp-fail2ban-tenant-jail) live in
+# /etc/fail2ban/jail.d/, generated dynamically at tenant create/destroy
+# time, not tracked here.
+
+[DEFAULT]
+# Moderate, not permanent -- a false positive should self-heal within
+# half an hour, not require manual `fail2ban-client unbanip` recovery.
+# Tightening these later (once real ban patterns are observed) is easy;
+# a too-aggressive default risks locking out legitimate use on day one.
+bantime = 30m
+findtime = 10m
+maxretry = 5
+ignoreip = 127.0.0.1/8 ::1
+# nftables-native, not iptables-multiport: verified directly on vhsp2
+# (Ubuntu 26.04, nftables is the actual backend, iptables is just the
+# nft-compat shim) that iptables-multiport's actionstart silently
+# creates no chain at all -- no error logged, jail reports "started"
+# cleanly, but `iptables -S`/`nft list ruleset` show no f2b-* chain
+# and no ban would ever actually take effect. nftables-multiport is the
+# action that's actually confirmed working on this host.
+banaction = nftables-multiport
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+ignorecommand = /usr/local/sbin/vhsp-fail2ban-allowlist-check <ip>
+
+[vhsp-admin-login]
+enabled = true
+port = http,https
+filter = vhsp-admin-login
+logpath = /srv/vhsp/audit.log
+# No tenant slug -- this jail has no tenant concept, it's the single
+# shared operator UI, so only the platform-wide operator allowlist
+# applies here (see deploy/vhsp-fail2ban-allowlist-check).
+ignorecommand = /usr/local/sbin/vhsp-fail2ban-allowlist-check <ip>
+
+[vhsp-tenant-admin-login]
+enabled = true
+port = http,https
+filter = vhsp-tenant-admin-login
+logpath = /srv/vhsp/tenants/*/phpconf/login_attempts.log
+# No tenant slug passed here either -- this jail is shared across every
+# tenant (wildcarded logpath), so there's no single tenant to scope an
+# allowlist check to at the fail2ban layer even if we wanted to. Per-
+# tenant allowlisting for THIS jail happens one layer up, in
+# images/tenant-admin/app.py, which simply never writes a log line for
+# an IP that tenant has already allowlisted -- see the README section
+# for why a ban here is platform-wide regardless (every tenant shares
+# port 443 through the same Traefik instance), which is what makes
+# per-jail scoping impossible here in the first place.
+ignorecommand = /usr/local/sbin/vhsp-fail2ban-allowlist-check <ip>
+# Deliberately much more tolerant than [DEFAULT] -- a follow-up security
+# review flagged that inheriting maxretry=5/bantime=30m here means 5
+# routine, unremarkable failed logins against ANY ONE tenant's admin
+# panel (the same background-scanner noise that probes /wp-admin on
+# every host on the internet, not a targeted attack) firewalls that
+# source IP off of EVERY tenant's public site for half an hour, since a
+# ban here is platform-wide regardless of which tenant's log triggered
+# it (see above). This jail's false-positive cost is uniquely severe
+# among all four jails in this file, so it gets the most conservative
+# thresholds, not the shared default: a much higher bar to trigger
+# (maxretry), and a shorter blast-radius window if it still does
+# (bantime). The per-account app-level lockout
+# (LOGIN_ATTEMPTS_FILE/LOGIN_MAX_FAILURES in images/tenant-admin/app.py,
+# independent of source IP, unaffected by any of this) stays the
+# primary defense against credential stuffing on one account; this jail
+# is a backstop against a genuinely abusive single source, not the
+# first line of defense.
+maxretry = 20
+findtime = 15m
+bantime = 15m

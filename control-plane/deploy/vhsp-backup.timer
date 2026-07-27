@@ -1,0 +1,15 @@
+[Unit]
+Description=Daily VHSP tenant backup sweep
+
+[Timer]
+# Each tenant's OWN backup_interval (daily/weekly/monthly, default daily)
+# governs whether run-all actually backs it up on a given day --
+# is_backup_due skips anyone not due yet. Running the sweep itself daily,
+# not just at the coarsest configured interval, is what makes "weekly"/
+# "monthly" tenants get picked up promptly once they do come due, instead
+# of waiting for some separately-scheduled weekly/monthly timer to also exist.
+OnCalendar=daily
+Persistent=true
+
+[Install]
+WantedBy=timers.target

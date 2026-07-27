@@ -1,0 +1,25 @@
+#!/bin/bash
+# Root-owned wrapper invoked via sudo by vhsp_ctl/provisioner.py's
+# tail_fail2ban_log() -- same reasoning as every other wrapper script in
+# this directory (see deploy/vhsp-harden-hostdir's own header comment):
+# astjohn's scoped sudoers grant can't safely hand out general
+# `fail2ban-client`/raw-log access, so this exists as one narrow,
+# self-validating action instead.
+#
+# /var/log/fail2ban.log isn't documented anywhere in this repo as
+# readable by a non-root user (confirmed by grep before writing this --
+# genuinely unknown, not assumed root-only out of excess caution), so
+# this wrapper -- not a chmod/group change on the log file itself -- is
+# the way astjohn's own web.py process gets to it. Read-only: just a
+# `tail`, no argument beyond the line count reaches a shell that could
+# be abused.
+#
+# Args: <n> (number of lines, small positive integer only).
+set -euo pipefail
+
+n="${1:?usage: vhsp-fail2ban-log-tail <n>}"
+
+[[ "$n" =~ ^[0-9]+$ ]] || { echo "invalid line count: $n" >&2; exit 1; }
+(( n >= 1 && n <= 2000 )) || { echo "line count out of range (1-2000): $n" >&2; exit 1; }
+
+tail -n "$n" /var/log/fail2ban.log
