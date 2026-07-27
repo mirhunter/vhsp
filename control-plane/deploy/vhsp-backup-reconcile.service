@@ -19,6 +19,21 @@ Environment=VHSP_DOCKER_HOST=tcp://127.0.0.1:2375
 # never reads these directly; see backup.py's process_requests docstring
 # and architecture.md's "Backups per tenant" section for the full
 # request-file-plus-reconciler shape this exists to drive.
+# Deployment-specific: blank on purpose, filled in per host. The installed
+# copy under /etc/systemd/system will diverge from this file permanently as
+# a result -- **never reinstall this unit by copying the repo version over a
+# running deployment**, or the destination is silently blanked. Diff first
+# and carry the values across by hand.
+#
+# These must be set HERE even though the same four values appear on the
+# other vhsp units: each systemd unit reads its own environment at process
+# start, there is no shared env file. Leaving them unset doesn't error --
+# the job just runs and ships nowhere, which is the failure mode this block
+# exists to prevent.
+Environment=VHSP_BACKUP_SFTP_HOST=
+Environment=VHSP_BACKUP_SFTP_PORT=22
+Environment=VHSP_BACKUP_SFTP_USER=
+Environment=VHSP_BACKUP_SFTP_PATH=/backup
 ExecStart=__VHSP_HOME__/vhsp-control-plane/.venv/bin/vhsp backup process-requests
 
 NoNewPrivileges=false

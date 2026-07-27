@@ -15,6 +15,21 @@ WorkingDirectory=__VHSP_HOME__/vhsp-control-plane
 # on a real deployment -- each systemd unit reads its own env at process
 # start, no shared env file, so this one needs them set independently
 # too, not inherited from the others.
+# Deployment-specific: blank on purpose, filled in per host. The installed
+# copy under /etc/systemd/system will diverge from this file permanently as
+# a result -- **never reinstall this unit by copying the repo version over a
+# running deployment**, or the destination is silently blanked. Diff first
+# and carry the values across by hand.
+#
+# These must be set HERE even though the same four values appear on the
+# other vhsp units: each systemd unit reads its own environment at process
+# start, there is no shared env file. Leaving them unset doesn't error --
+# the job just runs and ships nowhere, which is the failure mode this block
+# exists to prevent.
+Environment=VHSP_BACKUP_SFTP_HOST=
+Environment=VHSP_BACKUP_SFTP_PORT=22
+Environment=VHSP_BACKUP_SFTP_USER=
+Environment=VHSP_BACKUP_SFTP_PATH=/backup
 ExecStart=__VHSP_HOME__/vhsp-control-plane/.venv/bin/vhsp backup ship-audit-log
 
 NoNewPrivileges=false

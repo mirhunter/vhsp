@@ -736,7 +736,7 @@ own docstring warns atmoz/sftp only builds `authorized_keys` from that
 volume on a container's first-ever boot. Verified on vhsp2: recreated
 both live tenants' tenant-admin and SFTP containers, confirmed via
 `docker inspect` all four report the correct `Memory`/`NanoCpus`,
-confirmed `testing.bigchimp.org`'s real SFTP key (`smoketest` never had
+confirmed `tenant1.example.com`'s real SFTP key (`smoketest` never had
 one set) was still present in `authorized_keys` after its SFTP
 container's recreate -- the exact failure mode the docstring warns
 about, checked directly rather than assumed.
@@ -1862,7 +1862,7 @@ the right port/logpath/ignorecommand on create, `fail2ban-client
 status` showed it active; destroyed the tenant, confirmed the jail file
 was removed and the jail count dropped back down. Both pre-existing
 live tenants (`smoketest-vhsp2-dvce-us` port 2200,
-`testing-bigchimp-org` port 2201, both created before this code
+`tenant1-example-com` port 2201, both created before this code
 shipped) backfilled with jails via the same script run manually once.
 After the two bug fixes above, confirmed **live** (not just offline)
 against `smoketest-vhsp2-dvce-us`'s real `sftp.log`: a freshly appended
@@ -2033,7 +2033,7 @@ A real `vhsp tenant create` for a throwaway domain
 - `vhsp tenant destroy` cleanly removed the WAF container and left no
   orphaned volumes.
 - Confirmed both pre-existing live tenants
-  (`smoketest.vhsp2.dvce.us`, `testing.bigchimp.org`) were completely
+  (`smoketest.vhsp2.dvce.us`, `tenant1.example.com`) were completely
   unaffected throughout -- still on their original web containers with
   the original direct-routing labels, no WAF container, real `200`s the
   whole time. Phase 1 deliberately doesn't touch already-live tenants.
@@ -2057,7 +2057,7 @@ container's labels costs **zero dropped requests** -- some requests
 briefly go direct-to-web (skipping WAF inspection) and some go via the
 new WAF, but every single one still reaches the real site successfully.
 
-Retrofitted both `smoketest.vhsp2.dvce.us` and `testing.bigchimp.org`
+Retrofitted both `smoketest.vhsp2.dvce.us` and `tenant1.example.com`
 this way, `DetectionOnly` (the platform default, no override). Verified
 per tenant, same depth as Phase 1's disposable-tenant testing: real
 site + tenant-admin panel both still return `200` afterward, web
@@ -2114,7 +2114,7 @@ test payload) renders as literal escaped text, not executable markup.
 **Verified on vhsp2** against both live tenants: real authenticated
 session (a disposable test operator, removed after), both
 `/tenants/smoketest.vhsp2.dvce.us/logs` and
-`/tenants/testing.bigchimp.org/logs` show a real "WAF (Coraza)"
+`/tenants/tenant1.example.com/logs` show a real "WAF (Coraza)"
 section with genuine audit-log content, including the earlier SQLi
 test's own detection event still visible in the tail. All 5 existing
 log sections confirmed still rendering correctly alongside it -- no
@@ -2855,7 +2855,7 @@ rejected from calling `self_overview`).
 
 ### Verified end-to-end on vhsp2, against real infrastructure
 
-Allowed a real live tenant (`testing.bigchimp.org`) for both surfaces
+Allowed a real live tenant (`tenant1.example.com`) for both surfaces
 from the operator side, enabled both from that tenant's own panel,
 minted a real token from inside that tenant's own container. Exercised
 real REST calls (`GET /api/v1/self`, `GET /api/v1/self/mailboxes`)
