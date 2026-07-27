@@ -2893,7 +2893,14 @@ def tenant_email(domain):
 
 CERT_STATUS_TABLE = """
 {% if cert_status %}
-<div class="card" style="overflow-x:auto; margin-bottom:1rem">
+{# No overflow-x on this card. It has a sticky <thead>, and any scroll
+   container between a sticky element and the viewport becomes its
+   containing block -- `top: var(--topbar-h)` then pushes the header that
+   far down INSIDE the card, leaving an empty band and the header floating
+   over the second row. That's the bug #19 fixed on the DNS records table
+   directly below this one; this card would have reintroduced it. Two
+   short columns, so there is nothing to scroll sideways anyway. #}
+<div class="card" style="margin-bottom:1rem">
   <table>
     <thead><tr><th>SSL certificate</th><th>Hostname</th></tr></thead>
     <tbody>
