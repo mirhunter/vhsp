@@ -1,0 +1,54 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: control-plane
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The pinned lock file, not the looser ranges in pyproject.toml --
+      # CI should exercise the same versions the deployment runs.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-lock.txt
+          pip install -e '.[dev]'
+
+      - name: Run tests
+        run: pytest -q
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The deploy/ wrappers run as root via sudo and the image entrypoints
+      # turn tenant-supplied data into nginx/dovecot config, so a quoting
+      # slip in either is worth catching mechanically.
+      - name: ShellCheck deploy scripts and image entrypoints
+        run: |
+          shellcheck --severity=warning \
+            control-plane/deploy/vhsp-harden-hostdir \
+            control-plane/deploy/vhsp-remove-hostdir \
+            control-plane/deploy/vhsp-backup-tar \
+            control-plane/deploy/vhsp-restore-clean \
+            control-plane/deploy/vhsp-fail2ban-allowlist-check \
+            control-plane/deploy/vhsp-fail2ban-tenant-jail \
+            control-plane/deploy/vhsp-fail2ban-log-tail \
+            control-plane/deploy/vhsp-mcp-firewall \
+            control-plane/deploy/vhsp-mcp-toggle \
+            control-plane/images/web/entrypoint.sh \
+            control-plane/images/mail/entrypoint.sh \
+            control-plane/images/mailgw/entrypoint.sh

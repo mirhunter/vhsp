@@ -16,9 +16,15 @@ dependencies = [
     "fastmcp>=3.4",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
 [project.scripts]
 vhsp = "vhsp_ctl.cli:cli"
 vhsp-admin = "vhsp_ctl.web:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=68"]
