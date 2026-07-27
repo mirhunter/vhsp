@@ -405,53 +405,42 @@ def _tls_labels(router: str, with_certresolver: bool) -> dict:
     return labels
 
 
-def should_request_cert(domain: str) -> bool:
-    """Is this tenant's DNS already pointing here, i.e. would an ACME
-    order actually succeed right now?
+def should_request_cert_for(hostname: str) -> bool:
+    """Is this one hostname's DNS already pointing here, i.e. could an
+    ACME challenge for it actually succeed right now?
 
-    Used at every point a router-bearing container is created, not just
-    at provisioning. That makes the decision self-correcting rather than
-    something to remember: a tenant whose DNS is live keeps its resolver
-    through an unrelated recreate (the DB-password reset path recreates
-    tenant-admin, and silently dropping the resolver there would downgrade
-    a working tenant to a self-signed cert), and a tenant whose DNS is
-    still wrong stays off the resolver and burns no validations.
+    Per hostname, not per tenant, and that distinction matters. An
+    earlier version required every hostname to be live before issuing
+    anything, which meant a tenant who simply never created a webmail or
+    www record left their main site on a self-signed certificate
+    permanently -- blocked by a record they had no intention of making.
+    Certificates are ordered per router anyway, so there is no reason for
+    one hostname's absence to hold another's back.
 
-    Every hostname this platform issues a certificate for must be live,
-    and the list must stay equal to the set of routers that carry a
-    certresolver -- apex, admin, and webmail. They share one decision
-    because they are provisioned together, and issuing for one while
-    another still 404s the challenge spends a validation on the half that
-    cannot succeed.
-
-    webmail is included even though its router lives on the shared
-    Roundcube container: a tenant can easily have apex and admin correct
-    while webmail is missing, and gating that router on the other two
-    hostnames -- as it was until this -- ordered a certificate for a name
-    whose challenge could not be answered.
-
-    `www.<domain>` is deliberately NOT here, despite being one of the
-    records dns_records suggests. Nothing routes it: there is no
-    Host(`www.<domain>`) rule anywhere, so no certificate is requested
-    for it and blocking on it would stall certificates on a record that
-    changes nothing. That gap is real but separate -- a tenant who
-    follows the suggested records today gets a 404 on www.
-
-    False when the platform IP isn't configured -- with nothing to compare
+    False when the platform IP isn't configured: with nothing to compare
     against there is no evidence DNS is right, and the safe reading of no
     evidence is "don't order yet".
     """
     if not dns_records.PLATFORM_PUBLIC_IP:
         return False
-    return all(
-        dns_records.is_record_live("A", host, dns_records.PLATFORM_PUBLIC_IP)
-        for host in (domain, f"admin.{domain}", f"webmail.{domain}")
-    )
+    return dns_records.is_record_live("A", hostname, dns_records.PLATFORM_PUBLIC_IP)
 
+
+def tenant_cert_hostnames(domain: str) -> list[str]:
+    """Every hostname this platform requests a certificate for.
+
+    Single source of truth for the reconciler and the reissue action, so
+    adding a router with a certresolver means adding it here too rather
+    than discovering later that nothing ever checks it.
+
+    mail.<domain> is absent on purpose: its IMAPS/SMTPS routers use TLS
+    passthrough to the tenant's own mail container, so Traefik never
+    terminates or requests anything for it.
+    """
+    return [domain, f"www.{domain}", f"admin.{domain}", f"webmail.{domain}"]
 
 def _create_waf_container(
     client: docker.DockerClient, slug: str, domain: str, phpconf_host_path: str,
-    with_certresolver: bool = False,
 ) -> str:
     """Coraza WAF (OWASP Core Rule Set) reverse-proxy sidecar -- owns the
     public Traefik router _create_web_container used to hold directly,
@@ -529,7 +518,30 @@ def _create_waf_container(
             f"traefik.http.routers.{router_id}.rule": f"Host(`{domain}`)",
             f"traefik.http.routers.{router_id}.entrypoints": "web",
             f"traefik.http.services.{router_id}.loadbalancer.server.port": str(WAF_INTERNAL_PORT),
-            **_tls_labels(router_id, with_certresolver),
+            **_tls_labels(router_id, should_request_cert_for(domain)),
+            # www.<domain> redirects to the apex. dns_records has always
+            # suggested an A record for it, tenants create it, and until
+            # now nothing routed it -- it returned 404 behind the
+            # self-signed fallback on every tenant.
+            #
+            # A separate router with its own certificate, not www folded
+            # into the apex rule. Folding them makes one ACME order cover
+            # both names, so a tenant who never points www here would
+            # block their own apex certificate. Separate keeps each
+            # hostname's fate its own.
+            f"traefik.http.routers.{router_id}.service": router_id,
+            f"traefik.http.routers.{router_id}-www.rule": f"Host(`www.{domain}`)",
+            f"traefik.http.routers.{router_id}-www.entrypoints": "web",
+            f"traefik.http.routers.{router_id}-www.service": router_id,
+            f"traefik.http.routers.{router_id}-www.middlewares": f"{router_id}-www-redirect",
+            **_tls_labels(f"{router_id}-www", should_request_cert_for(f"www.{domain}")),
+            # Preserves path and query. Anchored on the leading "www." so
+            # it can't rewrite a host that merely contains it.
+            f"traefik.http.middlewares.{router_id}-www-redirect.redirectregex.regex":
+                rf"^https?://www\.{re.escape(domain)}/(.*)",
+            f"traefik.http.middlewares.{router_id}-www-redirect.redirectregex.replacement":
+                f"https://{domain}/$1",
+            f"traefik.http.middlewares.{router_id}-www-redirect.redirectregex.permanent": "true",
             "vhsp.tenant.slug": slug,
             "vhsp.tenant.domain": domain,
         },
@@ -884,7 +896,6 @@ def _create_tenant_admin_container(
     mail_volume: str,
     ssh_port: int,
     sftp_user: str,
-    with_certresolver: bool = False,
 ) -> tuple[str, str, str]:
     """Per-tenant self-service admin page (hand-rolled Flask -- see
     images/tenant-admin/). Toggles PHP functions, the 404-fallback
@@ -1061,7 +1072,7 @@ def _create_tenant_admin_container(
             f"traefik.http.routers.{router_id}-public.rule": f"Host(`{admin_hostname}`)",
             f"traefik.http.routers.{router_id}-public.entrypoints": "web",
             f"traefik.http.routers.{router_id}-public.service": router_id,
-            **_tls_labels(f"{router_id}-public", with_certresolver),
+            **_tls_labels(f"{router_id}-public", should_request_cert_for(admin_hostname)),
             "vhsp.tenant.slug": slug,
             "vhsp.tenant.domain": domain,
         },
@@ -1288,13 +1299,10 @@ def create_tenant(domain: str, actor: str = "cli") -> registry.Tenant:
         client, slug, domain, volume_name, phpconf_volume, logs_volume,
         db_network, db_container_name, db_name, db_user, db_password,
     )
-    # Decided once and reused for both routers below so they can't
-    # disagree. If DNS isn't pointing here yet, both come up on the
-    # self-signed fallback and ask Let's Encrypt for nothing; the backup
-    # reconciler picks them up once DNS resolves. See should_request_cert.
-    wants_cert = should_request_cert(domain)
-    waf_container_name = _create_waf_container(client, slug, domain, phpconf_host_path,
-                                               with_certresolver=wants_cert)
+    # Each router decides for itself -- see should_request_cert_for. A
+    # tenant who never creates a www record still gets a real certificate
+    # on their apex; the reconciler picks up whatever is still waiting.
+    waf_container_name = _create_waf_container(client, slug, domain, phpconf_host_path)
 
     sftp_user = _generate_sftp_user(slug)
     sftp_container_name, ssh_keys_volume, ssh_keys_host_path = _create_sftp_container(
@@ -1309,7 +1317,7 @@ def create_tenant(domain: str, actor: str = "cli") -> registry.Tenant:
     tenant_admin_container, admin_hostname, tenant_admin_password = _create_tenant_admin_container(
         client, slug, domain, phpconf_volume, phpconf_host_path, logs_volume, volume_name,
         db_network, db_container_name, db_name, db_user, db_password, mail_volume,
-        ssh_port, sftp_user, with_certresolver=wants_cert,
+        ssh_port, sftp_user,
     )
 
     tenant = registry.Tenant(
@@ -2121,10 +2129,6 @@ def reset_tenant_db_password(domain: str, actor: str = "cli") -> str:
         tenant.logs_volume, tenant.webroot_volume, tenant.db_network, tenant.db_container,
         tenant.db_name, tenant.db_user, new_password, tenant.mail_volume,
         tenant.ssh_port, tenant.sftp_user,
-        # Re-derived, not defaulted: this recreate is about the DB
-        # password and must not quietly downgrade a tenant that already
-        # holds a real certificate.
-        with_certresolver=should_request_cert(tenant.domain),
     )
 
     audit.log_action("tenant.reset_db_password", domain, actor)
@@ -2519,9 +2523,13 @@ def reissue_tenant_certificates(domain: str, actor: str = "cli") -> dict:
         )
 
     admin_hostname = f"admin.{domain}"
+    # Only the hostnames this call can actually act on. webmail's router
+    # lives on the shared Roundcube container and is left to the
+    # reconciler's own regeneration, so demanding its DNS here would
+    # refuse a reissue this call could have completed.
     not_live = [
         host for host in (domain, admin_hostname)
-        if not dns_records.is_record_live("A", host, dns_records.PLATFORM_PUBLIC_IP)
+        if not should_request_cert_for(host)
     ]
     if not_live:
         raise CertReissueError(
@@ -2538,8 +2546,7 @@ def reissue_tenant_certificates(domain: str, actor: str = "cli") -> dict:
             client.containers.get(tenant.waf_container).remove(force=True)
         except NotFound:
             pass
-        name = _create_waf_container(client, tenant.slug, tenant.domain, tenant.phpconf_host_path,
-                                    with_certresolver=True)
+        name = _create_waf_container(client, tenant.slug, tenant.domain, tenant.phpconf_host_path)
         registry.set_tenant_waf_container(domain, name)
         recreated.append(domain)
 
@@ -2551,7 +2558,7 @@ def reissue_tenant_certificates(domain: str, actor: str = "cli") -> dict:
         client, tenant.slug, tenant.domain, tenant.phpconf_volume, tenant.phpconf_host_path,
         tenant.logs_volume, tenant.webroot_volume, tenant.db_network, tenant.db_container,
         tenant.db_name, tenant.db_user, tenant.db_password, tenant.mail_volume,
-        tenant.ssh_port, tenant.sftp_user, with_certresolver=True,
+        tenant.ssh_port, tenant.sftp_user,
     )
     recreated.append(admin_hostname)
 
@@ -2605,7 +2612,7 @@ def reconcile_tenant_certificates(actor: str = "reconciler") -> list[dict]:
         try:
             if tenant_has_certresolver(client, tenant):
                 continue
-            if not should_request_cert(tenant.domain):
+            if not any(should_request_cert_for(h) for h in tenant_cert_hostnames(tenant.domain)):
                 continue
             result = reissue_tenant_certificates(tenant.domain, actor=actor)
             flipped.append(result)

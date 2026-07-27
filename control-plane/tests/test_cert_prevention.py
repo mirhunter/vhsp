@@ -41,40 +41,6 @@ def test_with_dns_the_resolver_is_requested():
     assert labels["traefik.http.routers.r.tls.certresolver"] == "letsencrypt"
 
 
-# --- the decision ------------------------------------------------------
-
-@pytest.fixture
-def dns(monkeypatch):
-    monkeypatch.setattr(provisioner.dns_records, "PLATFORM_PUBLIC_IP", "203.0.113.1")
-    return monkeypatch
-
-
-def test_requests_a_cert_when_both_hostnames_resolve_here(dns):
-    dns.setattr(provisioner.dns_records, "is_record_live", lambda *a: True)
-    assert provisioner.should_request_cert("t.example.com")
-
-
-def test_holds_off_when_neither_resolves(dns):
-    dns.setattr(provisioner.dns_records, "is_record_live", lambda *a: False)
-    assert not provisioner.should_request_cert("t.example.com")
-
-
-def test_holds_off_when_only_the_apex_resolves(dns):
-    """One order per hostname, so issuing while admin. still 404s the
-    challenge spends a validation that cannot succeed."""
-    dns.setattr(provisioner.dns_records, "is_record_live",
-                lambda kind, host, ip: not host.startswith("admin."))
-    assert not provisioner.should_request_cert("t.example.com")
-
-
-def test_holds_off_when_the_platform_ip_is_unset(monkeypatch):
-    """No evidence DNS is right is not the same as evidence it is."""
-    monkeypatch.setattr(provisioner.dns_records, "PLATFORM_PUBLIC_IP", "")
-    monkeypatch.setattr(provisioner.dns_records, "is_record_live",
-                        lambda *a: pytest.fail("must not look up DNS with no IP to compare against"))
-    assert not provisioner.should_request_cert("t.example.com")
-
-
 # --- reading current state off the container --------------------------
 
 def _tenant(waf="waf-c"):
@@ -119,8 +85,8 @@ def test_skips_tenants_that_already_have_a_certificate(recon):
     monkeypatch, calls = recon
     monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
     monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
-    monkeypatch.setattr(provisioner, "should_request_cert",
-                        lambda d: pytest.fail("must not check DNS for a tenant already holding a cert"))
+    monkeypatch.setattr(provisioner, "should_request_cert_for",
+                        lambda h: pytest.fail("must not check DNS for a tenant already holding a cert"))
 
     assert provisioner.reconcile_tenant_certificates() == []
     assert calls == []
@@ -130,7 +96,7 @@ def test_skips_tenants_whose_dns_is_still_wrong(recon):
     monkeypatch, calls = recon
     monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
     monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: False)
-    monkeypatch.setattr(provisioner, "should_request_cert", lambda d: False)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: False)
 
     assert provisioner.reconcile_tenant_certificates() == []
     assert calls == [], "reissuing here would burn a validation that cannot succeed"
@@ -140,7 +106,7 @@ def test_flips_a_tenant_whose_dns_has_caught_up(recon):
     monkeypatch, calls = recon
     monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
     monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: False)
-    monkeypatch.setattr(provisioner, "should_request_cert", lambda d: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: True)
 
     result = provisioner.reconcile_tenant_certificates()
     assert calls == ["t.example.com"]
@@ -155,7 +121,7 @@ def test_one_tenants_failure_does_not_stop_the_pass(recon):
     b.domain = "second.example.com"
     monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [a, b])
     monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: False)
-    monkeypatch.setattr(provisioner, "should_request_cert", lambda d: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: True)
 
     def boom(domain, actor="x"):
         if domain == "t.example.com":
@@ -169,42 +135,97 @@ def test_one_tenants_failure_does_not_stop_the_pass(recon):
     assert len(result) == 1
 
 
-# --- the gate must cover exactly what we issue for ---------------------
 
-def test_the_gate_covers_webmail_too(dns):
-    """We request certificates for apex, admin AND webmail. Checking only
-    the first two meant a tenant with those correct but webmail missing
-    still ordered a webmail certificate whose challenge could not be
-    answered."""
-    checked = []
+
+# --- per-hostname gating ----------------------------------------------
+
+@pytest.fixture
+def dns(monkeypatch):
+    monkeypatch.setattr(provisioner.dns_records, "PLATFORM_PUBLIC_IP", "203.0.113.1")
+    return monkeypatch
+
+
+def test_a_hostname_pointing_here_may_be_issued_for(dns):
+    dns.setattr(provisioner.dns_records, "is_record_live", lambda *a: True)
+    assert provisioner.should_request_cert_for("t.example.com")
+
+
+def test_a_hostname_pointing_elsewhere_may_not(dns):
+    dns.setattr(provisioner.dns_records, "is_record_live", lambda *a: False)
+    assert not provisioner.should_request_cert_for("t.example.com")
+
+
+def test_an_unconfigured_platform_ip_blocks_issuance(monkeypatch):
+    monkeypatch.setattr(provisioner.dns_records, "PLATFORM_PUBLIC_IP", "")
+    monkeypatch.setattr(provisioner.dns_records, "is_record_live",
+                        lambda *a: pytest.fail("must not look up DNS with nothing to compare against"))
+    assert not provisioner.should_request_cert_for("t.example.com")
+
+
+def test_one_missing_record_does_not_block_the_others(dns):
+    """The reason this is per hostname. Requiring every name to be live
+    meant a tenant who never created a webmail or www record left their
+    main site on a self-signed certificate permanently."""
     dns.setattr(provisioner.dns_records, "is_record_live",
-                lambda kind, host, ip: checked.append(host) or True)
-    provisioner.should_request_cert("t.example.com")
-    assert set(checked) == {"t.example.com", "admin.t.example.com", "webmail.t.example.com"}
+                lambda kind, host, ip: not host.startswith(("webmail.", "www.")))
+    assert provisioner.should_request_cert_for("t.example.com")
+    assert provisioner.should_request_cert_for("admin.t.example.com")
+    assert not provisioner.should_request_cert_for("webmail.t.example.com")
+    assert not provisioner.should_request_cert_for("www.t.example.com")
 
 
-def test_a_missing_webmail_record_blocks_issuance(dns):
-    dns.setattr(provisioner.dns_records, "is_record_live",
-                lambda kind, host, ip: not host.startswith("webmail."))
-    assert not provisioner.should_request_cert("t.example.com")
-
-
-def test_the_gate_matches_the_routers_that_carry_a_resolver():
-    """Structural guard against the two drifting apart. Every Host() rule
-    given a certresolver needs a corresponding DNS check, or we order for
-    a name nobody verified."""
-    import re
-    from pathlib import Path
-    src = Path(provisioner.__file__).read_text()
-
-    gate = src[src.index("def should_request_cert"):]
-    gate = gate[:gate.index("\ndef ", 1)]
-    checked_suffixes = set(re.findall(r'f"([a-z]+)\.\{domain\}"', gate)) | {""}
-
-    # Router rules that get _tls_labels applied somewhere in the module.
-    assert "webmail" in checked_suffixes, "webmail router carries a resolver but isn't gated"
-    assert "admin" in checked_suffixes, "admin router carries a resolver but isn't gated"
-    assert "www" not in checked_suffixes, (
-        "www has no router, so gating on it would stall certificates on a "
-        "record that routes nothing -- see the docstring"
+def test_the_hostname_list_covers_every_router_we_issue_for():
+    hosts = provisioner.tenant_cert_hostnames("t.example.com")
+    assert hosts == ["t.example.com", "www.t.example.com",
+                     "admin.t.example.com", "webmail.t.example.com"]
+    assert not any(h.startswith("mail.") for h in hosts), (
+        "mail uses TLS passthrough -- Traefik terminates nothing for it"
     )
+
+
+# --- the www router ----------------------------------------------------
+
+def _waf_labels(monkeypatch, tmp_path, live):
+    from unittest.mock import MagicMock
+    client = MagicMock()
+    monkeypatch.setattr(provisioner.dns_records, "PLATFORM_PUBLIC_IP", "203.0.113.1")
+    monkeypatch.setattr(provisioner.dns_records, "is_record_live",
+                        lambda kind, host, ip: host in live)
+    provisioner._create_waf_container(client, "t-example-com", "t.example.com", str(tmp_path))
+    return client.containers.run.call_args.kwargs["labels"]
+
+
+def test_www_is_actually_routed(monkeypatch, tmp_path):
+    """It was suggested in the DNS records and routed nowhere -- every
+    tenant's www returned 404 behind the self-signed fallback."""
+    labels = _waf_labels(monkeypatch, tmp_path, {"t.example.com"})
+    rules = [v for k, v in labels.items() if k.endswith(".rule")]
+    assert "Host(`www.t.example.com`)" in rules
+
+
+def test_www_redirects_to_the_apex_preserving_the_path(monkeypatch, tmp_path):
+    labels = _waf_labels(monkeypatch, tmp_path, {"t.example.com"})
+    regex = next(v for k, v in labels.items() if k.endswith("redirectregex.regex"))
+    repl = next(v for k, v in labels.items() if k.endswith("redirectregex.replacement"))
+    assert regex.startswith("^https?://www\\.")
+    assert repl == "https://t.example.com/$1"
+
+
+def test_www_has_its_own_router_so_it_cannot_block_the_apex(monkeypatch, tmp_path):
+    """Folding www into the apex rule would put both names in one ACME
+    order, so a tenant who never points www here would block their own
+    apex certificate. Separate routers keep each hostname's fate its own."""
+    labels = _waf_labels(monkeypatch, tmp_path, {"t.example.com"})  # www NOT live
+
+    apex = "traefik.http.routers.vhsp-t-example-com"
+    www = "traefik.http.routers.vhsp-t-example-com-www"
+    assert labels[f"{apex}.tls.certresolver"] == "letsencrypt", "apex must still be issued"
+    assert labels[f"{www}.tls"] == "true"
+    assert f"{www}.tls.certresolver" not in labels, "www must wait for its own DNS"
+    # And the apex rule must not have absorbed www.
+    assert "www" not in labels[f"{apex}.rule"]
+
+
+def test_www_gets_its_resolver_once_its_own_dns_lands(monkeypatch, tmp_path):
+    labels = _waf_labels(monkeypatch, tmp_path, {"t.example.com", "www.t.example.com"})
+    assert labels["traefik.http.routers.vhsp-t-example-com-www.tls.certresolver"] == "letsencrypt"
