@@ -226,6 +226,22 @@ services:
       - --providers.file.directory=/etc/traefik/dynamic
       - --providers.file.watch=true
       - --entrypoints.acme-http.address=:80
+      # Redirect everything else on :80 to HTTPS. Without these two lines
+      # port 80 carries exactly one router -- acme-http@internal, matching
+      # PathPrefix(`/.well-known/acme-challenge/`) -- so a plain
+      # http://tenant-domain typed into a browser matches nothing and gets
+      # a bare 404 (reported as issue #20, and it hit the operator UI's own
+      # hostname too, not just tenant sites).
+      #
+      # This does NOT break certificate issuance, which is the obvious
+      # worry and worth stating because a silent break here would not
+      # surface until renewals ~30 days before expiry: acme-http@internal
+      # carries priority 9223372036854775807 (MaxInt64), so it outranks the
+      # redirect router these flags create. Verified on a live host --
+      # /.well-known/acme-challenge/<anything> still returns 404 from the
+      # challenge handler rather than a 301, which is the discriminator.
+      - --entrypoints.acme-http.http.redirections.entrypoint.to=web
+      - --entrypoints.acme-http.http.redirections.entrypoint.scheme=https
       - --entrypoints.web.address=:443
       - --entrypoints.web.http.tls=true
       - --entrypoints.web.http.tls.certresolver=letsencrypt
@@ -265,6 +281,34 @@ use it explicitly instead of trusting the magic hostname:
 ```
 docker network inspect traefik --format '{{json .IPAM.Config}}'
 ```
+
+### Existing hosts: adding the HTTP→HTTPS redirect
+
+A deployment installed before this was documented has no redirect, so
+plain `http://<tenant-domain>` returns 404 rather than going to HTTPS.
+Add the two `redirections` lines above to `~/traefik/docker-compose.yml`
+and recreate Traefik:
+
+```
+cd ~/traefik && sudo docker compose up -d
+```
+
+`sudo` because the control-plane user is deliberately not in the `docker`
+group (see "Docker socket exposure" in the README) -- `docker compose`
+here talks to the raw socket, not the scoped proxy.
+
+Recreating Traefik briefly interrupts TLS for every tenant on the host.
+Afterwards, confirm both halves:
+
+```
+curl -sI http://<tenant-domain>/ | head -1                       # expect 301
+curl -so /dev/null -w '%{http_code}\n' \
+  http://<tenant-domain>/.well-known/acme-challenge/probe        # expect 404, NOT 301
+```
+
+The second check is the important one: a 301 there would mean the
+redirect is intercepting ACME challenges and certificate renewals will
+fail silently about 30 days before expiry.
 
 ## 6. Operator admin UI
 
