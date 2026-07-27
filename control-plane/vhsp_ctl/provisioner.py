@@ -377,6 +377,7 @@ def _create_web_container(
 
 def _create_waf_container(
     client: docker.DockerClient, slug: str, domain: str, phpconf_host_path: str,
+    https_redirect: bool = True,
 ) -> str:
     """Coraza WAF (OWASP Core Rule Set) reverse-proxy sidecar -- owns the
     public Traefik router _create_web_container used to hold directly,
@@ -390,6 +391,18 @@ def _create_waf_container(
     "Coraza WAF" section for why this is a real container rather than a
     Traefik plugin (the open-source Traefik-native path can't load the
     actual OWASP CRS at all).
+
+    https_redirect (see registry.Tenant.https_redirect, #20): whether a
+    plain http://<domain> request gets redirected to https, or falls
+    through to Traefik's own bare 404 -- the platform's original
+    behavior. This container's own router is the only one bound to
+    Host(<domain>) at all, so the redirect has to live here too: an
+    extra router+middleware pair on the `acme-http` (:80) entrypoint,
+    left off entirely when disabled rather than present-but-inert, so
+    "disabled" reproduces the exact pre-#20 behavior. Doesn't interfere
+    with the ACME HTTP-01 challenge on that same entrypoint -- Traefik
+    services `/.well-known/acme-challenge/...` itself ahead of router
+    matching, regardless of what routers/redirects are also bound there.
 
     No second network join needed -- unlike the web container, this one
     has no DB access and no reason to leave GATEWAY_NETWORK.
@@ -426,6 +439,22 @@ def _create_waf_container(
         # this tenant needs may not exist yet during provisioning.
         waf_conf_host_path.write_text(waf.render_conf(WAF_ENGINE_MODE, waf.read_allowlist()))
         os.chmod(waf_conf_host_path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IRGRP | stat.S_IROTH)
+    labels = {
+        "traefik.enable": "true",
+        f"traefik.http.routers.{router_id}.rule": f"Host(`{domain}`)",
+        f"traefik.http.routers.{router_id}.entrypoints": "web",
+        f"traefik.http.services.{router_id}.loadbalancer.server.port": str(WAF_INTERNAL_PORT),
+        "vhsp.tenant.slug": slug,
+        "vhsp.tenant.domain": domain,
+    }
+    if https_redirect:
+        labels.update({
+            f"traefik.http.routers.{router_id}-http.rule": f"Host(`{domain}`)",
+            f"traefik.http.routers.{router_id}-http.entrypoints": "acme-http",
+            f"traefik.http.routers.{router_id}-http.service": router_id,
+            f"traefik.http.routers.{router_id}-http.middlewares": f"{router_id}-https-redirect",
+            f"traefik.http.middlewares.{router_id}-https-redirect.redirectscheme.scheme": "https",
+        })
     container = client.containers.run(
         WAF_IMAGE,
         name=container_name,
@@ -449,14 +478,7 @@ def _create_waf_container(
             "SET_REAL_IP_FROM": gateway_subnet,
             "SERVER_NAME": domain,
         },
-        labels={
-            "traefik.enable": "true",
-            f"traefik.http.routers.{router_id}.rule": f"Host(`{domain}`)",
-            f"traefik.http.routers.{router_id}.entrypoints": "web",
-            f"traefik.http.services.{router_id}.loadbalancer.server.port": str(WAF_INTERNAL_PORT),
-            "vhsp.tenant.slug": slug,
-            "vhsp.tenant.domain": domain,
-        },
+        labels=labels,
     )
     return container_name
 
@@ -2093,6 +2115,45 @@ def set_tenant_billing_account_id(domain: str, billing_account_id: str, actor: s
     most of this file's other setters -- it's a plain registry column."""
     registry.set_tenant_billing_account_id(domain, billing_account_id)
     audit.log_action("tenant.set_billing_account_id", domain, actor)
+
+
+def set_tenant_https_redirect(domain: str, enabled: bool, actor: str = "cli") -> None:
+    """Toggles whether plain http://<domain> redirects to https for this
+    tenant (see registry.Tenant.https_redirect, #20) -- defaults on for
+    every tenant, this is the lever for a tenant/operator who wants the
+    old bare-404 behavior back instead.
+
+    Unlike set_tenant_billing_account_id (a plain registry column with no
+    other effect), this one has to recreate the WAF container: the
+    redirect is a pair of `traefik.*` labels baked in at container-create
+    time (_create_waf_container), and Traefik's Docker provider only ever
+    reads labels off a container's current state, not a registry row --
+    so the label change doesn't take effect until the container holding
+    it is recreated, same "env vars/labels aren't hot-reloadable" reason
+    reset_tenant_db_password recreates the web/tenant-admin containers.
+    Brief loss of public routing for this tenant while the sidecar
+    restarts (same as any WAF container recreate -- see recreate_waf.py's
+    own module docstring), not ongoing downtime.
+    """
+    tenant = registry.get_tenant(domain)
+    if not tenant:
+        raise ProvisioningError(f"no active tenant for domain {domain!r}")
+
+    registry.set_tenant_https_redirect(domain, enabled)
+
+    client = _client()
+    if tenant.waf_container:
+        try:
+            client.containers.get(tenant.waf_container).remove(force=True)
+        except NotFound:
+            pass
+
+    container_name = _create_waf_container(
+        client, tenant.slug, tenant.domain, tenant.phpconf_host_path, https_redirect=enabled,
+    )
+    registry.set_tenant_waf_container(domain, container_name)
+
+    audit.log_action(f"tenant.https_redirect_{'on' if enabled else 'off'}", domain, actor)
 
 
 def _maintenance_marker_for(tenant: registry.Tenant) -> Path:

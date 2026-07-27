@@ -1936,6 +1936,30 @@ instead of Traefik → web directly. `_create_web_container` still joins
 `WAF_CONTAINER_NAME` env var (deterministic from `slug`, no new
 coordination needed between the two container-create functions).
 
+**HTTP → HTTPS redirect, on by default per tenant (#20).** A plain
+`http://<domain>` request used to match no router at all -- the `web`
+entrypoint (`:443`, TLS-terminating) is the only one any
+`traefik.http.routers.*` label here has ever targeted, and `acme-http`
+(`:80`) existed solely to satisfy the Let's Encrypt HTTP-01 challenge --
+so it fell through to Traefik's own bare 404 instead of reaching the
+tenant's site. `_create_waf_container` now takes a `https_redirect: bool
+= True` param and, when true, adds a second router bound to
+`acme-http` with a `redirectscheme` middleware pointing at `https`,
+scoped to that tenant's own `Host(<domain>)` rule -- left off entirely
+rather than present-but-inert when false, so "off" reproduces the exact
+original 404 behavior. Doesn't interfere with the ACME HTTP-01 challenge
+on that same entrypoint (Traefik services
+`/.well-known/acme-challenge/...` itself ahead of router matching).
+Persisted per tenant as `registry.Tenant.https_redirect`
+(`provisioner.set_tenant_https_redirect`, exposed in the admin UI on
+each tenant's page) -- like every other WAF-container setting, flipping
+it recreates that one container (labels aren't hot-reloadable), so it's
+a brief interruption to that tenant's public routing, not ongoing
+downtime. Tenants provisioned before this shipped need `recreate_waf.py
+<domain>` run once to pick it up (it already passes the tenant's stored
+`https_redirect` value, defaulting true via the same DB migration new
+rows get).
+
 **Real-client-IP chain, the part most likely to have silently broken
 something.** `images/web/entrypoint.sh` used to trust exactly one
 dynamically-resolved hop (`traefik`, via `getent hosts`). With the WAF

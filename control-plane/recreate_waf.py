@@ -49,6 +49,8 @@ if t.waf_container:
 else:
     print(f"{domain!r} has no waf_container on record yet -- creating for the first time")
 
-container_name = provisioner._create_waf_container(client, t.slug, t.domain, t.phpconf_host_path)
+container_name = provisioner._create_waf_container(
+    client, t.slug, t.domain, t.phpconf_host_path, https_redirect=t.https_redirect,
+)
 registry.set_tenant_waf_container(domain, container_name)
 print(f"recreated {container_name}, registry updated")

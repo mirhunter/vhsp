@@ -73,6 +73,13 @@ CREATE TABLE IF NOT EXISTS tenants (
     -- tenant-facing concept). Optional, never required at creation time,
     -- same as backup_dest_host etc. below.
     billing_account_id TEXT NOT NULL DEFAULT '',
+    -- Whether plain http://<domain> gets redirected to https, or falls
+    -- through to Traefik's own bare 404 (see provisioner.py's
+    -- _create_waf_container -- this is a pair of `traefik.*` labels on
+    -- the tenant's WAF sidecar, not a nginx/PHP-level setting). DEFAULT 1
+    -- so every tenant, new or pre-existing, redirects unless an operator
+    -- explicitly turns it off via set_tenant_https_redirect.
+    https_redirect INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'active',
     created_at TEXT NOT NULL
 );
@@ -176,6 +183,10 @@ class Tenant:
     # precedent as tenant_admin_password above: also creation-time-set,
     # also defaulted for low-risk evolution.
     waf_container: str = ""
+    # Defaults True so a fresh create_tenant() call redirects out of the
+    # box (see #20 -- a tenant typing a bare http://<domain> into a
+    # browser used to get a 404 instead of landing on their site).
+    https_redirect: bool = True
     id: int | None = None
 
 
@@ -227,6 +238,7 @@ _MIGRATIONS = [
     ("backup_ssh_public_key", "TEXT NOT NULL DEFAULT ''"),
     ("billing_account_id", "TEXT NOT NULL DEFAULT ''"),
     ("waf_container", "TEXT NOT NULL DEFAULT ''"),
+    ("https_redirect", "INTEGER NOT NULL DEFAULT 1"),
 ]
 
 
@@ -271,8 +283,8 @@ def add_tenant(tenant: Tenant) -> None:
                  mail_volume, mail_host_path, mail_hostname, mail_user,
                  mail_password, tenant_admin_container, phpconf_volume,
                  phpconf_host_path, admin_hostname, logs_volume,
-                 logs_host_path, tenant_admin_password, status, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 logs_host_path, tenant_admin_password, https_redirect, status, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 tenant.slug,
@@ -307,6 +319,7 @@ def add_tenant(tenant: Tenant) -> None:
                 tenant.logs_volume,
                 tenant.logs_host_path,
                 secretbox.encrypt(tenant.tenant_admin_password),
+                int(tenant.https_redirect),
                 tenant.status,
                 tenant.created_at,
             ),
@@ -322,6 +335,7 @@ def _row_to_tenant(row: sqlite3.Row) -> Tenant:
     # stricter check later.
     d = dict(row)
     d["backup_encryption_enabled"] = bool(d["backup_encryption_enabled"])
+    d["https_redirect"] = bool(d["https_redirect"])
     for field in _ENCRYPTED_FIELDS:
         d[field] = secretbox.decrypt(d[field])
     return Tenant(**d)
@@ -401,6 +415,18 @@ def set_tenant_waf_container(domain: str, waf_container: str) -> None:
         conn.execute(
             "UPDATE tenants SET waf_container = ? WHERE domain = ? AND status = 'active'",
             (waf_container, domain),
+        )
+
+
+def set_tenant_https_redirect(domain: str, enabled: bool) -> None:
+    """Not a credential -- a plain flag, same as billing_account_id below.
+    provisioner.set_tenant_https_redirect is the real entry point (it
+    also recreates the WAF container so the new `traefik.*` labels
+    actually take effect); this just persists the choice."""
+    with _connect() as conn:
+        conn.execute(
+            "UPDATE tenants SET https_redirect = ? WHERE domain = ? AND status = 'active'",
+            (int(enabled), domain),
         )
 
 

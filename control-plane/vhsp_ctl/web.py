@@ -1908,6 +1908,28 @@ def tenant_detail(domain):
         {% endif %}
       </div>
 
+      <div class="card" id="https-redirect">
+        <h3 style="margin-top:0">HTTP &rarr; HTTPS redirect</h3>
+        <p class="muted">
+          Whether a plain <code>http://{{ t.domain }}</code> request -- e.g. typed into a
+          browser's address bar with no scheme -- redirects to
+          <code>https://{{ t.domain }}</code>, or falls through to Traefik's own bare 404
+          (the platform's original behavior). Applying a change briefly interrupts this
+          tenant's public routing while its WAF sidecar container restarts to pick up the
+          new setting.
+        </p>
+        <p>
+          {% if t.https_redirect %}<span class="badge badge-ok">On</span>
+          <span class="muted">http:// requests redirect to https://.</span>
+          {% else %}<span class="badge badge-warn">Off</span>
+          <span class="muted">http:// requests get a bare 404.</span>{% endif %}
+        </p>
+        <form method="post" action="{{ url_for('tenant_set_https_redirect', domain=t.domain) }}">
+          <input type="hidden" name="enabled" value="{{ '0' if t.https_redirect else '1' }}">
+          <button type="submit">{{ 'Turn off' if t.https_redirect else 'Turn on' }}</button>
+        </form>
+      </div>
+
       <div class="card" id="operator-access">
         <h3 style="margin-top:0">Temporary tenant-admin access{% if not has_2fa %} <span class="muted" style="font-weight:400;font-size:0.78rem">(2FA required)</span>{% endif %}</h3>
         <p class="muted">
@@ -2311,6 +2333,28 @@ def tenant_set_billing_account_id(domain):
     provisioner.set_tenant_billing_account_id(domain, billing_account_id, actor=f"admin-ui:{session['username']}")
     flash("Billing account ID updated." if billing_account_id else "Billing account ID cleared.", "ok")
     return redirect(url_for("tenant_detail", domain=domain))
+
+
+@app.route("/tenants/<domain>/https-redirect", methods=["POST"])
+@require_auth
+def tenant_set_https_redirect(domain):
+    """Applying this briefly interrupts the tenant's public routing (their
+    WAF sidecar container gets recreated -- see
+    provisioner.set_tenant_https_redirect's docstring), same real-but-brief
+    cost tenant_waf's mode changes don't have, but nowhere near the
+    "removes a live protection layer" risk that route's @require_2fa
+    guards against -- so this doesn't need it."""
+    enabled = request.form.get("enabled") == "1"
+    try:
+        provisioner.set_tenant_https_redirect(domain, enabled, actor=f"admin-ui:{session['username']}")
+        flash(
+            "http:// requests now redirect to https://." if enabled
+            else "http:// requests now get a bare 404 (redirect turned off).",
+            "ok",
+        )
+    except provisioner.ProvisioningError as e:
+        flash(f"error: {e}", "error")
+    return redirect(url_for("tenant_detail", domain=domain, _anchor="https-redirect"))
 
 
 @app.route("/tenants/<domain>/maintenance", methods=["POST"])
