@@ -375,7 +375,17 @@ BASE_CSS = DARK_AWARE_CSS + """
   .table-filter { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
   .table-filter input[type=search] { max-width: 300px; }
   .table-filter .filter-count { font-size: 0.85rem; white-space: nowrap; }
-  .card table { margin: -1.5rem; width: calc(100% + 3rem); overflow-x: auto; }
+  /* No overflow-x here, and not because it isn't wanted: `overflow` has
+     no effect on a `display: table` element at all, so the rule that used
+     to live here was inert -- which is why the one page that genuinely
+     needed sideways scrolling had ended up putting `overflow-x:auto` on
+     its .card instead. That did work, and broke the sticky header on that
+     page (see the DNS table's own comment). If a table ever does need to
+     scroll horizontally, wrap it in a real block-level div and set
+     `thead th { position: static }` inside that wrapper -- a sticky
+     header cannot pin to the topbar from inside a scroll container, and
+     silently offsetting it is exactly the bug this replaced. */
+  .card table { margin: -1.5rem; width: calc(100% + 3rem); }
   .card table th:first-child, .card table td:first-child { padding-left: 1.5rem; }
   .card table th:last-child, .card table td:last-child { padding-right: 1.5rem; }
   .kv td:first-child { width: 1%; white-space: nowrap; font-weight: 600; color: var(--muted); font-size: 0.85rem; }
@@ -2887,7 +2897,16 @@ DNS_RECORDS_TABLE = """
   <button type="submit" name="check" value="1">Check records</button>
   {% if checked %}<span class="muted" style="margin-left:0.5rem">Checked against live DNS just now.</span>{% endif %}
 </form>
-<div class="card" style="overflow-x:auto">
+{# No overflow-x on this card, deliberately. Any scroll container between
+   a sticky <thead> and the viewport becomes that header's containing
+   block, so `thead th { top: var(--topbar-h) }` stopped meaning "sit
+   under the topbar" and started meaning "sit --topbar-h down from the
+   top of THIS card" -- which rendered an empty band where the header
+   belonged and floated the header over the second row. Reported on this
+   page; the header is the only thing here that was ever sticky, so the
+   card is what had to give. The Value column already wraps
+   (word-break:break-all below), so nothing needs to scroll sideways. #}
+<div class="card">
   <table>
     <thead><tr><th>Type</th><th>Name</th><th>Value</th></tr></thead>
     <tbody>

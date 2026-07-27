@@ -1599,7 +1599,13 @@ BASE_CSS = DARK_AWARE_CSS + """
   thead th { background: var(--thead-bg); font-size: 0.78rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); font-weight: 600; }
   tbody tr:last-child td { border-bottom: none; }
   tbody tr:hover { background: var(--row-hover); }
-  .card table { margin: -1.5rem; width: calc(100% + 3rem); overflow-x: auto; }
+  /* Inert, so removed -- `overflow` does not apply to a `display: table`
+     element. See vhsp_ctl/web.py's identical rule for the full note. The
+     two cards in this file that set overflow-x inline are unaffected by
+     the sticky-header bug that motivated this, since nothing in this
+     panel's headers is sticky; they're left alone because there the
+     scrolling genuinely works. */
+  .card table { margin: -1.5rem; width: calc(100% + 3rem); }
   .card table th:first-child, .card table td:first-child { padding-left: 1.5rem; }
   .card table th:last-child, .card table td:last-child { padding-right: 1.5rem; }
 
