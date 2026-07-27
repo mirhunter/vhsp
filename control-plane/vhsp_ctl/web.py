@@ -375,7 +375,17 @@ BASE_CSS = DARK_AWARE_CSS + """
   .table-filter { display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.9rem; }
   .table-filter input[type=search] { max-width: 300px; }
   .table-filter .filter-count { font-size: 0.85rem; white-space: nowrap; }
-  .card table { margin: -1.5rem; width: calc(100% + 3rem); overflow-x: auto; }
+  /* No overflow-x here, and not because it isn't wanted: `overflow` has
+     no effect on a `display: table` element at all, so the rule that used
+     to live here was inert -- which is why the one page that genuinely
+     needed sideways scrolling had ended up putting `overflow-x:auto` on
+     its .card instead. That did work, and broke the sticky header on that
+     page (see the DNS table's own comment). If a table ever does need to
+     scroll horizontally, wrap it in a real block-level div and set
+     `thead th { position: static }` inside that wrapper -- a sticky
+     header cannot pin to the topbar from inside a scroll container, and
+     silently offsetting it is exactly the bug this replaced. */
+  .card table { margin: -1.5rem; width: calc(100% + 3rem); }
   .card table th:first-child, .card table td:first-child { padding-left: 1.5rem; }
   .card table th:last-child, .card table td:last-child { padding-right: 1.5rem; }
   .kv td:first-child { width: 1%; white-space: nowrap; font-weight: 600; color: var(--muted); font-size: 0.85rem; }
@@ -933,6 +943,96 @@ def logout():
     return redirect(url_for("login"))
 
 
+# Endpoints still reachable while a forced password change is pending.
+# Deliberately tiny: the change page itself, logging out, and the static
+# assets without which that page renders unstyled. Everything else waits.
+_PASSWORD_CHANGE_EXEMPT = {"password_change_required", "logout", "static"}
+
+
+@app.before_request
+def _require_password_change():
+    """Funnels an operator holding a password somebody else chose straight
+    to the change page, and lets them reach nothing else until it's done.
+
+    A before_request hook rather than a check bolted onto each login exit:
+    session['username'] gets set in three places (plain login, TOTP via
+    login_2fa, WebAuthn via its own complete endpoint), and a check on
+    those paths would still leave every route reachable afterwards by
+    typing its URL. Gating the session itself holds however the login
+    began and however the operator then navigates. Same reasoning, and
+    the same shape, as images/tenant-admin/'s identical hook.
+
+    Keyed on session['username'], which only exists after any second
+    factor has already been satisfied -- so this never interferes with the
+    2FA challenge itself, which runs on session['pending_username'].
+    """
+    if not session.get("username"):
+        return None  # anonymous, or mid-2FA -- the login flow owns this
+    if request.endpoint in _PASSWORD_CHANGE_EXEMPT:
+        return None
+    if not auth.must_change_password(session["username"]):
+        return None
+    return redirect(url_for("password_change_required"))
+
+
+@app.route("/password-change-required", methods=["GET", "POST"])
+@require_auth
+def password_change_required():
+    """Forced change after somebody else set this account's password --
+    `vhsp admin add-operator`, `vhsp admin reset-password`, or another
+    operator's reset from /operators.
+
+    Deliberately does NOT ask for the current password, unlike the
+    voluntary change on /account: the operator just proved they hold it by
+    logging in, and re-typing a long generated string they pasted out of a
+    terminal is friction with no security value. Same call
+    images/tenant-admin/'s equivalent page already made.
+
+    Anyone reaching here with no pending change is sent home, so a stale
+    bookmark doesn't strand them on a page demanding something that isn't
+    required.
+    """
+    if not auth.must_change_password(session["username"]):
+        return redirect(url_for("index"))
+    error = None
+    if request.method == "POST":
+        new = request.form.get("new_password", "")
+        confirm = request.form.get("confirm_password", "")
+        if not new:
+            error = "Enter a new password."
+        elif len(new) < MIN_PASSWORD_LENGTH:
+            error = f"New password must be at least {MIN_PASSWORD_LENGTH} characters."
+        elif new != confirm:
+            error = "New password and confirmation don't match."
+        else:
+            auth.set_password(session["username"], new, actor=f"admin-ui:{session['username']}")
+            flash("Password updated.", "ok")
+            return redirect(url_for("index"))
+    return render_template_string(
+        AUTH_PAGE, error=error, heading="Choose your own password",
+        body="""
+      <p class="muted" style="margin-top:0">
+        The password you just used was generated for you and is single-use.
+        Choose your own now -- it replaces the one you were given, which
+        stops working as soon as you finish.
+      </p>
+      <form method="post" autocomplete="off">
+        <div class="field"><label for="new_password">New password</label>
+          <input type="password" id="new_password" name="new_password" autocomplete="new-password" autofocus required></div>
+        <div class="field"><label for="confirm_password">Confirm new password</label>
+          <input type="password" id="confirm_password" name="confirm_password" autocomplete="new-password" required></div>
+        <button type="submit" style="width:100%">Set my password</button>
+      </form>
+      <form method="post" action="/logout" style="margin-top:1rem">
+        <button type="submit" class="btn-ghost" style="width:100%">Log out instead</button>
+      </form>
+    """)
+# Literal "/logout", not url_for: AUTH_PAGE substitutes the body via
+# {{ body|safe }} in a single render pass, so Jinja tags inside it are
+# inert text by the time they land -- the same constraint login_2fa's own
+# body already works around.
+
+
 @app.route("/account", methods=["GET", "POST"])
 @require_auth
 def account():
@@ -1474,11 +1574,18 @@ def operator_remove(username):
 def operator_reset_password(username):
     password = secrets.token_urlsafe(18)
     try:
-        auth.set_password(username, password, actor=f"admin-ui:{session['username']}")
+        # must_change: whoever ran this reads the password off their screen
+        # to pass it on, so the person logging in with it isn't the person
+        # who chose it -- and by then it has been through a browser, a
+        # flash message, and whatever channel it was relayed over.
+        auth.set_password(username, password, actor=f"admin-ui:{session['username']}", must_change=True)
     except auth.AuthError as e:
         flash(str(e), "error")
         return redirect(url_for("operators_view"))
-    flash(f"New password for {username!r} (shown once): {password}", "ok")
+    flash(Markup(
+        f"New password for {escape(username)} (shown once): <code>{escape(password)}</code> "
+        "&mdash; single-use, they'll be asked to choose their own at next login."
+    ), "ok")
     return redirect(url_for("operators_view"))
 
 
@@ -2824,7 +2931,16 @@ DNS_RECORDS_TABLE = """
   <button type="submit" name="check" value="1">Check records</button>
   {% if checked %}<span class="muted" style="margin-left:0.5rem">Checked against live DNS just now.</span>{% endif %}
 </form>
-<div class="card" style="overflow-x:auto">
+{# No overflow-x on this card, deliberately. Any scroll container between
+   a sticky <thead> and the viewport becomes that header's containing
+   block, so `thead th { top: var(--topbar-h) }` stopped meaning "sit
+   under the topbar" and started meaning "sit --topbar-h down from the
+   top of THIS card" -- which rendered an empty band where the header
+   belonged and floated the header over the second row. Reported on this
+   page; the header is the only thing here that was ever sticky, so the
+   card is what had to give. The Value column already wraps
+   (word-break:break-all below), so nothing needs to scroll sideways. #}
+<div class="card">
   <table>
     <thead><tr><th>Type</th><th>Name</th><th>Value</th></tr></thead>
     <tbody>
