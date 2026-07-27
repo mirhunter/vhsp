@@ -310,6 +310,33 @@ The second check is the important one: a 301 there would mean the
 redirect is intercepting ACME challenges and certificate renewals will
 fail silently about 30 days before expiry.
 
+### Certificate reconciler
+
+Tenants created before their DNS points at this host come up on Traefik's
+self-signed certificate and deliberately ask Let's Encrypt for nothing.
+This timer notices once their A records resolve here and requests for
+real. Without it those tenants stay self-signed until an operator presses
+"Reissue certificates" by hand.
+
+```
+./deploy/vhsp-render --user "$VHSP_USER"
+sudo cp deploy/rendered/vhsp-cert-reconcile.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now vhsp-cert-reconcile.timer
+```
+
+Set `VHSP_PLATFORM_PUBLIC_IP` in the unit to the same value
+`vhsp-admin.service` uses -- that is what tenant DNS is checked against.
+With it unset the reconciler does nothing at all rather than guessing,
+which is safe but silent, so it is worth confirming:
+
+```
+sudo -u "$VHSP_USER" ~/vhsp-control-plane/.venv/bin/vhsp tenant reconcile-certs
+```
+
+Expect `nothing to do` on a platform where every tenant already holds a
+certificate.
+
 ## 6. Operator admin UI
 
 A bare systemd process (not a container), so it needs its own Traefik
