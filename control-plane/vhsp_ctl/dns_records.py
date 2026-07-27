@@ -7,6 +7,8 @@ DNS from here.
 """
 import logging
 import re
+import socket
+import ssl
 import subprocess
 from dataclasses import asdict, dataclass
 
@@ -111,6 +113,58 @@ def is_record_live(kind: str, name: str, expected_value: str) -> bool:
         return False
 
     return False
+
+
+def is_cert_live(hostname: str) -> bool:
+    """Best-effort: has Traefik actually obtained a real, browser-trusted
+    cert for `hostname` yet, as opposed to still serving its own
+    self-signed fallback (what it hands back for any SNI it has no ACME
+    cert for)? This is the direct answer to "did my cert actually get
+    issued" -- distinct from (and checked separately from) whether the
+    DNS records above are live, because the two are neither the same
+    event nor reliably in the same state.
+
+    Traefik requests each router's certificate when it *discovers the
+    router*, i.e. as the tenant's containers start, not on the first
+    HTTPS request and not on any later one. DEPLOYMENT.md sets the
+    resolver at the entrypoint
+    (`--entrypoints.web.http.tls.certresolver=letsencrypt`), so every
+    router on `web` gets a certificate order the moment it appears, with
+    no `certresolver` label anywhere in provisioner.py.
+
+    **A failed order does not heal itself.** Observed directly on vhsp2:
+    a tenant created at 15:49 before its A record pointed here produced
+    five failed ACME orders within sixteen seconds and then nothing --
+    no further attempt over the following hour, including across repeated
+    HTTPS handshakes to those exact hostnames once DNS *was* correct, and
+    including after restarting the tenant's own containers (identical
+    labels, so Traefik sees no configuration change and does not
+    re-resolve). It stayed on the self-signed fallback until Traefik
+    itself was restarted, which is currently the only known recovery and
+    is platform-wide.
+
+    So this function answers a question an operator otherwise cannot see
+    the answer to, and the honest guidance attached to a False result is
+    "this needs operator action", not "reload the page". See issue #18.
+
+    Talks to Traefik over loopback (this platform's own Traefik always
+    publishes :443 on the host per DEPLOYMENT.md, and this process
+    already runs on that same host) rather than the tenant's public IP,
+    so this check works regardless of whether `hostname`'s own DNS has
+    propagated yet -- same reasoning as is_record_live's own `@1.1.1.1`
+    choice, just solving the opposite direction of the same shadowing
+    problem. False on any connection/handshake/verification failure
+    (timeout, refused, self-signed fallback cert, expired cert): never
+    raises, same contract as is_record_live.
+    """
+    ctx = ssl.create_default_context()
+    try:
+        with socket.create_connection(("127.0.0.1", 443), timeout=5) as sock:
+            with ctx.wrap_socket(sock, server_hostname=hostname):
+                return True
+    except (OSError, ssl.SSLError) as exc:
+        logger.warning("cert check: TLS handshake for %r raised %r", hostname, exc)
+        return False
 
 
 def dkim_txt_value(client: docker.DockerClient, mail_container: str, domain: str) -> str:
@@ -228,6 +282,20 @@ def check_records_live(records: list[dict]) -> list[dict]:
     on demand, when a caller explicitly asks (the admin UI's "Check
     records" button), never automatically on a normal page load."""
     return [{**r, "ok": is_record_live(r["kind"], r["name"], r["value"])} for r in records]
+
+
+def cert_status(domain: str, admin_hostname: str) -> list[dict]:
+    """SSL certificate status for the two Traefik HTTP routers a tenant
+    actually gets (the main site, and the admin panel -- WebAuthn login
+    there specifically needs a real cert, per admin_hostname's own
+    routing comment in provisioner.py). Same on-demand-only shape as
+    check_records_live: computed fresh when a caller explicitly asks,
+    never cached, since "issued" is exactly the kind of state that
+    changes underneath a stale cache the moment DNS catches up."""
+    return [
+        {"label": "Main site", "hostname": domain, "ok": is_cert_live(domain)},
+        {"label": "Admin panel", "hostname": admin_hostname, "ok": is_cert_live(admin_hostname)},
+    ]
 
 
 def records_as_json(records: list[DnsRecord]) -> str:

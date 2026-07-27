@@ -128,6 +128,60 @@ scheduled rotation -- see "Admin web UI" -> "Incident response" below.
 SFTP has no password to rotate -- it's key-only; `vhsp tenant
 set-ssh-key` already covers replacing that.)
 
+## DNS records and SSL certificate status: closing the visibility gap on a real race
+
+A new tenant's domain isn't live in real DNS the moment `vhsp tenant
+create` returns -- the suggested records above are exactly that,
+suggestions a human still has to paste in at whatever actually hosts the
+zone (see architecture.md's "DNS automation for new tenants"). Traefik,
+meanwhile, requests each tenant's Let's Encrypt cert via the HTTP-01
+challenge on the very first HTTPS request it sees for that hostname,
+which fails outright if the A record isn't resolving to this host yet.
+That's a real race an operator or tenant creating a new domain will hit
+routinely, not a hypothetical: nothing before this pass ever surfaced
+*whether* it had happened, so a freshly created tenant with pending DNS
+just looked broken with no indication of why or when it would resolve
+itself.
+
+**What's implemented is visibility, not recovery** -- and the
+distinction matters, because a failed certificate order does not fix
+itself. Traefik orders each certificate when it discovers the router
+(the tenant's containers starting), not on first visit: the resolver is
+set at the entrypoint in DEPLOYMENT.md's Traefik config, so every router
+on `web` is ordered as soon as it appears. If the A record wasn't
+already pointing here at that moment, the order fails -- and nothing
+retries it.
+
+Observed directly on a live host: a tenant created before its DNS was
+correct produced five failed orders within sixteen seconds, then no
+further attempt for the next hour. That silence held across repeated
+HTTPS requests to those hostnames after DNS had become correct, and
+across a restart of the tenant's own containers -- the labels are
+identical on restart, so Traefik sees no configuration change and never
+re-resolves. The tenant sat on Traefik's self-signed fallback until
+Traefik itself was restarted, which briefly drops TLS for every tenant
+on the host.
+
+So a `not issued` badge means an operator has to act; it will not clear
+on its own. A per-tenant "reissue now" action is the missing piece
+(issue #18) -- until it exists, the only known recovery is restarting
+Traefik. `dns_records.is_cert_live()`
+answers "has a real, CA-trusted cert actually been issued for this
+hostname yet" by making a direct TLS handshake to Traefik itself
+(loopback `127.0.0.1:443` from the host-side operator UI, the `traefik`
+container by its GATEWAY_NETWORK name from inside a tenant-admin
+container, since neither has a reason to depend on the tenant's own DNS
+having propagated just to run this check) and letting `ssl`'s own
+hostname/CA verification distinguish a genuine Let's Encrypt cert from
+Traefik's self-signed fallback -- a *different* signal from whether the
+DNS record itself is live, since the two states can (and often do)
+disagree for a while after DNS catches up. Surfaced on the operator's
+per-tenant DNS page (`/tenants/<domain>/dns`, both the main site and the
+admin-panel hostname, since WebAuthn login there specifically needs a
+real cert) and the tenant's own Email page, both alongside the existing
+"Check records" button rather than as a separate control -- one click
+answers both "is DNS live" and "did the cert actually get issued yet".
+
 ## Requires
 
 - The shared gateway network (`traefik` by default) must already exist.
