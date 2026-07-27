@@ -745,8 +745,18 @@ def login():
         <div class="field"><label>Password</label><input type="password" name="password" placeholder="password" autocomplete="current-password" required></div>
         <button type="submit" style="width:100%">Log in</button>
       </form>
+      <!-- A plain link, deliberately not the vendor's own <script> widget.
+           Nothing on this page may load third-party JavaScript: it renders
+           the operator credential form, so any remote script here runs with
+           DOM access to the username/password fields, and a CDN compromise
+           or a vendor-side change would be indistinguishable from normal
+           operation. There's also no CSP to fall back on (see
+           _security_headers' docstring for why that's still outstanding).
+           Same reasoning that already keeps CodeMirror and Swagger UI
+           vendored locally rather than pulled from a CDN at runtime. -->
       <div style="margin-top:1.25rem;padding-top:1.25rem;border-top:1px solid var(--border);text-align:center">
-        <script type="text/javascript" src="https://cdnjs.buymeacoffee.com/1.0.0/button.prod.min.js" data-name="bmc-button" data-slug="AllenStJohn" data-color="#5F7FFF" data-emoji="" data-font="Cookie" data-text="Buy me a coffee" data-outline-color="#000000" data-font-color="#ffffff" data-coffee-color="#FFDD00"></script>
+        <a class="muted" style="font-size:0.85rem" href="https://buymeacoffee.com/AllenStJohn"
+           target="_blank" rel="noopener noreferrer">Buy me a coffee</a>
       </div>
     """)
 
@@ -847,6 +857,13 @@ def webauthn_authenticate_complete():
     state = session.get('webauthn_state')
     if not pending or not state:
         return jsonify(ok=False, error="Not in a pending login."), 400
+    # Same short-circuit login_2fa's TOTP branch already does. Not because a
+    # WebAuthn assertion is guessable -- it isn't -- but because
+    # login_throttle.record_failure's contract is "only call this when
+    # is_locked() was already False", and without this check the failure
+    # path below was extending a lockout it wasn't enforcing.
+    if login_throttle.is_locked(pending):
+        return jsonify(ok=False, error="Too many failed attempts for this account. Try again in a few minutes."), 400
     if webauthn.authenticate_complete(pending, state, request.get_json(force=True)):
         session.pop('webauthn_state', None)
         session['username'] = session.pop('pending_username')
@@ -1422,7 +1439,7 @@ TENANT_NAV = """
       ('tenant_fallback', '404 handling', False), ('tenant_auth', 'Password protection', False),
       ('tenant_error_pages', 'Error pages', False), ('tenant_redirects', 'Redirects', True),
       ('tenant_noexec_dirs', 'No-exec dirs', True), ('tenant_ip_acl', 'IP restrictions', True),
-      ('tenant_email', 'Email', False), ('tenant_backups', 'Backups', True),
+      ('tenant_email', 'Email', True), ('tenant_backups', 'Backups', True),
       ('tenant_dns', 'DNS', False), ('tenant_logs', 'Logs', False),
       ('tenant_audit', 'Panel audit log', True),
     ] %}
@@ -2601,6 +2618,14 @@ def tenant_ip_acl(domain):
 
 @app.route("/tenants/<domain>/email", methods=["GET", "POST"])
 @require_auth
+# Gated for the same reason /tenants/<domain>/reset-mailbox-passwords above
+# already is: this page resets individual mailbox passwords (postmaster@
+# included), so leaving it open let an operator without a second factor
+# reach that route's exact outcome one mailbox at a time, which made the
+# gate on the bulk button decorative. Mailboxes are also the recovery
+# channel for most other accounts a tenant owns -- the same reasoning that
+# put require_2fa on the tenant side's own /email page.
+@require_2fa
 def tenant_email(domain):
     t, err = get_tenant_or_404(domain)
     if err:
