@@ -19,3 +19,6 @@ control-plane/deploy/rendered/
 
 # pytest
 .pytest_cache/
+
+# personal notes
+note.md

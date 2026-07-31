@@ -43,8 +43,11 @@ def test_with_dns_the_resolver_is_requested():
 
 # --- reading current state off the container --------------------------
 
-def _tenant(waf="waf-c"):
-    return type("T", (), {"domain": "t.example.com", "waf_container": waf})()
+def _tenant(waf="waf-c", domain="t.example.com"):
+    return type("T", (), {
+        "domain": domain, "waf_container": waf,
+        "slug": domain.replace(".", "-"),
+    })()
 
 
 def test_detects_a_tenant_already_holding_the_resolver():
@@ -78,6 +81,10 @@ def recon(monkeypatch):
     calls = []
     monkeypatch.setattr(provisioner, "reissue_tenant_certificates",
                         lambda domain, actor="x": calls.append(domain) or {"domain": domain, "hostnames": [domain]})
+    # webmail is checked independently of the apex/admin/www path on every
+    # tenant -- default to "already has its certificate" so tests that
+    # only care about the other path aren't forced to reason about it too.
+    monkeypatch.setattr(provisioner, "_webmail_certresolver_missing", lambda c, t: False)
     return monkeypatch, calls
 
 
@@ -258,3 +265,153 @@ def test_webmail_routers_are_gated_per_tenant(monkeypatch):
     loop = body[body.index("for t in registry.list_tenants():"):]
     assert "_tls_labels" in loop
 
+
+
+# --- webmail: checked independently, batched once per pass -------------
+
+def test_webmail_certresolver_missing_when_absent():
+    client = MagicMock()
+    client.containers.get.return_value.labels = {
+        "traefik.http.routers.webmail-t-example-com.tls": "true",
+    }
+    assert provisioner._webmail_certresolver_missing(client, _tenant())
+
+
+def test_webmail_certresolver_present_when_already_issued():
+    client = MagicMock()
+    client.containers.get.return_value.labels = {
+        "traefik.http.routers.webmail-t-example-com.tls": "true",
+        "traefik.http.routers.webmail-t-example-com.tls.certresolver": "letsencrypt",
+    }
+    assert not provisioner._webmail_certresolver_missing(client, _tenant())
+
+
+def test_webmail_check_keys_on_this_tenants_own_router():
+    """Roundcube is shared, so the check must key on THIS tenant's router,
+    not just "does any router on the container have a resolver" --
+    that would report every tenant as fine the moment any one of them
+    got a real webmail certificate."""
+    client = MagicMock()
+    client.containers.get.return_value.labels = {
+        "traefik.http.routers.webmail-other-tenant.tls.certresolver": "letsencrypt",
+    }
+    assert provisioner._webmail_certresolver_missing(client, _tenant())
+
+
+def test_missing_roundcube_container_is_not_reported_as_needing_reconcile():
+    """Nothing to flip yet if Roundcube isn't running at all -- the next
+    create/destroy or reconcile pass that actually needs it creates it."""
+    from docker.errors import NotFound
+    client = MagicMock()
+    client.containers.get.side_effect = NotFound("gone")
+    assert not provisioner._webmail_certresolver_missing(client, _tenant())
+
+
+def test_a_tenant_whose_apex_already_has_a_cert_still_gets_webmail_checked(recon):
+    """The bug this exists to fix (issue #27): once a tenant's apex/admin
+    got a real certificate, tenant_has_certresolver is True forever, and
+    the old code skipped that tenant entirely -- including its webmail
+    check, which lives on a completely different container and can
+    legitimately still be missing."""
+    monkeypatch, calls = recon
+    monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
+    monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "_webmail_certresolver_missing", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: True)
+    monkeypatch.setattr(provisioner, "_regenerate_roundcube_routes", lambda c: None)
+    monkeypatch.setattr(provisioner.audit, "log_action", lambda *a, **k: None)
+
+    result = provisioner.reconcile_tenant_certificates()
+
+    assert calls == [], "apex/admin already certified -- no reissue needed"
+    assert result == [{"domain": "t.example.com", "hostnames": ["webmail.t.example.com"]}]
+
+
+def test_webmail_is_not_flipped_while_its_own_dns_is_still_wrong(recon):
+    monkeypatch, calls = recon
+    monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
+    monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "_webmail_certresolver_missing", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: False)
+    monkeypatch.setattr(provisioner, "_regenerate_roundcube_routes",
+                        lambda c: pytest.fail("must not recreate Roundcube for DNS that isn't live"))
+
+    assert provisioner.reconcile_tenant_certificates() == []
+
+
+def test_a_tenant_whose_webmail_already_has_its_resolver_is_not_rechecked(recon):
+    """Mirrors the apex/admin/www 'no-op on a healthy platform' guarantee
+    -- and cheaper than it looks: _webmail_certresolver_missing short-
+    circuits before should_request_cert_for is ever called."""
+    monkeypatch, calls = recon
+    monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
+    monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for",
+                        lambda h: pytest.fail("must not check DNS once webmail already has its cert"))
+
+    assert provisioner.reconcile_tenant_certificates() == []
+
+
+def test_one_shared_recreate_covers_every_tenant_that_needed_it(recon):
+    """The whole reason webmail is handled separately: one Roundcube
+    recreate at the end of the pass, not one per tenant."""
+    monkeypatch, calls = recon
+    a = _tenant(domain="a.example.com")
+    b = _tenant(domain="b.example.com")
+    c = _tenant(domain="c.example.com")
+    monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [a, b, c])
+    monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: True)
+    monkeypatch.setattr(provisioner, "_webmail_certresolver_missing",
+                        lambda c, t: t.domain in ("a.example.com", "c.example.com"))
+    regenerate_calls = []
+    monkeypatch.setattr(provisioner, "_regenerate_roundcube_routes",
+                        lambda c: regenerate_calls.append(1))
+    logged = []
+    monkeypatch.setattr(provisioner.audit, "log_action",
+                        lambda action, domain, actor, **k: logged.append((action, domain)))
+
+    result = provisioner.reconcile_tenant_certificates()
+
+    assert len(regenerate_calls) == 1, "must recreate Roundcube exactly once, not per tenant"
+    flipped_domains = {r["domain"] for r in result}
+    assert flipped_domains == {"a.example.com", "c.example.com"}
+    assert ("tenant.webmail_cert_reconcile", "a.example.com") in logged
+    assert ("tenant.webmail_cert_reconcile", "c.example.com") in logged
+    assert not any(d == "b.example.com" for _, d in logged)
+
+
+def test_a_failed_roundcube_recreate_reports_nothing_flipped(recon):
+    """A failed recreate must not claim success for tenants it never
+    actually fixed."""
+    monkeypatch, calls = recon
+    monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [_tenant()])
+    monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "_webmail_certresolver_missing", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: True)
+
+    def boom(client):
+        raise RuntimeError("docker exploded")
+    monkeypatch.setattr(provisioner, "_regenerate_roundcube_routes", boom)
+
+    assert provisioner.reconcile_tenant_certificates() == []
+
+
+def test_webmail_check_failing_for_one_tenant_does_not_stop_the_pass(recon):
+    monkeypatch, calls = recon
+    a = _tenant(domain="a.example.com")
+    b = _tenant(domain="b.example.com")
+    monkeypatch.setattr(provisioner.registry, "list_tenants", lambda: [a, b])
+    monkeypatch.setattr(provisioner, "tenant_has_certresolver", lambda c, t: True)
+    monkeypatch.setattr(provisioner, "should_request_cert_for", lambda h: True)
+    monkeypatch.setattr(provisioner, "_regenerate_roundcube_routes", lambda c: None)
+    monkeypatch.setattr(provisioner.audit, "log_action", lambda *a, **k: None)
+
+    def flaky(c, t):
+        if t.domain == "a.example.com":
+            raise RuntimeError("docker exploded")
+        return True
+    monkeypatch.setattr(provisioner, "_webmail_certresolver_missing", flaky)
+
+    result = provisioner.reconcile_tenant_certificates()
+    assert result == [{"domain": "b.example.com", "hostnames": ["webmail.b.example.com"]}]
