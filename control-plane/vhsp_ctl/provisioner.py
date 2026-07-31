@@ -2600,6 +2600,22 @@ def tenant_has_certresolver(client, tenant) -> bool:
     return any(k.endswith(".tls.certresolver") for k in labels)
 
 
+def _webmail_certresolver_missing(client, tenant) -> bool:
+    """Does webmail.<tenant.domain>'s own router still lack a resolver?
+
+    Read off the shared Roundcube container's labels -- webmail.<domain>
+    is one router among many there, keyed by this tenant's slug (see
+    _regenerate_roundcube_routes' own router_id). False if Roundcube isn't
+    running: nothing to flip yet, and the next create/destroy or
+    reconcile pass that actually needs one creates it fresh anyway.
+    """
+    try:
+        labels = client.containers.get(ROUNDCUBE_CONTAINER).labels or {}
+    except NotFound:
+        return False
+    return f"traefik.http.routers.webmail-{tenant.slug}.tls.certresolver" not in labels
+
+
 def reconcile_tenant_certificates(actor: str = "reconciler") -> list[dict]:
     """Give a real certificate to any tenant whose DNS has since caught up.
 
@@ -2615,13 +2631,34 @@ def reconcile_tenant_certificates(actor: str = "reconciler") -> list[dict]:
     for the explicit reissue action rather than being retried on a timer
     into the rate limit.
 
+    webmail.<domain> is handled separately, once per pass rather than per
+    tenant, and that's deliberate rather than an oversight (issue #27):
+    its router lives on the single Roundcube container every tenant
+    shares, so there is no way to fix one tenant's webmail certificate
+    without recreating that container -- which briefly interrupts every
+    tenant's webmail, not just the one whose DNS just caught up. Confirmed
+    acceptable for this deployment: new tenants are infrequent enough that
+    paying this cost only when something has actually changed is fine, and
+    "only when something has changed" is exactly what batching means here
+    -- a platform where every tenant's webmail is already correct never
+    triggers a recreate at all.
+
     Per-tenant failures are swallowed for the same reason run_all_due_backups
     swallows them: one tenant's problem must not stop the pass reaching the
     rest. Returns what it changed, for the caller to log.
     """
     client = _client()
     flipped = []
+    webmail_domains_pending = []
+
     for tenant in registry.list_tenants():
+        try:
+            if (_webmail_certresolver_missing(client, tenant)
+                    and should_request_cert_for(f"webmail.{tenant.domain}")):
+                webmail_domains_pending.append(tenant.domain)
+        except Exception:
+            pass
+
         try:
             if tenant_has_certresolver(client, tenant):
                 continue
@@ -2631,4 +2668,14 @@ def reconcile_tenant_certificates(actor: str = "reconciler") -> list[dict]:
             flipped.append(result)
         except Exception:
             continue
+
+    if webmail_domains_pending:
+        try:
+            _regenerate_roundcube_routes(client)
+            for domain in webmail_domains_pending:
+                audit.log_action("tenant.webmail_cert_reconcile", domain, actor)
+                flipped.append({"domain": domain, "hostnames": [f"webmail.{domain}"]})
+        except Exception:
+            pass
+
     return flipped
